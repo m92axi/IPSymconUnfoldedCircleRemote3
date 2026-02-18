@@ -17,7 +17,7 @@ declare(strict_types=1);
 			$this->RegisterPropertyString('rev', '');
 			$this->RegisterPropertyString('ws_path', '');
 
-			$this->RequireParent('{9CD1AA03-841E-FB97-8E32-6536A1D4561B}');
+			$this->RequireParent('{D68FD31F-0E90-7019-F16C-1949BD3079EF}'); // Websocket Client
 		}
 
 		public function Destroy()
