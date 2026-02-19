@@ -1649,7 +1649,7 @@ class Remote3IntegrationDriver extends IPSModule
     /**
      * Gibt das Label (Name) einer Association anhand des aktuellen Wertes zurück.
      *
-     * @param int $varId   Die ID der Variablen
+     * @param int $varId Die ID der Variablen
      * @param mixed $value Der aktuelle Wert
      * @return string       Das zugehörige Label (Großbuchstaben), oder leer bei Fehler
      */

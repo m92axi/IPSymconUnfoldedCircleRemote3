@@ -1,98 +1,99 @@
 <?php
 
 declare(strict_types=1);
-	class Remote3MediaPlayer extends IPSModule
-	{
-		public function Create()
-		{
-			//Never delete this line!
-			parent::Create();
 
-			$this->RequireParent('{C810D534-2395-7C43-D0BE-6DEC069B2516}');
-		}
+class Remote3MediaPlayer extends IPSModule
+{
+    public function Create()
+    {
+        //Never delete this line!
+        parent::Create();
 
-		public function Destroy()
-		{
-			//Never delete this line!
-			parent::Destroy();
-		}
+        $this->RequireParent('{C810D534-2395-7C43-D0BE-6DEC069B2516}');
+    }
 
-		public function ApplyChanges()
-		{
-			//Never delete this line!
-			parent::ApplyChanges();
-		}
+    public function Destroy()
+    {
+        //Never delete this line!
+        parent::Destroy();
+    }
 
-		private function Send()
-		{
-			$this->SendDataToParent(json_encode(['DataID' => '{AC2A1323-0258-76DC-5AA8-9B0C092820A5}']));
-		}
+    public function ApplyChanges()
+    {
+        //Never delete this line!
+        parent::ApplyChanges();
+    }
 
-		public function ReceiveData($JSONString)
-		{
-			$data = json_decode($JSONString);
-			IPS_LogMessage('Device RECV', utf8_decode($data->Buffer));
-		}
+    private function Send()
+    {
+        $this->SendDataToParent(json_encode(['DataID' => '{AC2A1323-0258-76DC-5AA8-9B0C092820A5}']));
+    }
 
-        /**
-         * build configuration form
-         *
-         * @return string
-         */
-        public function GetConfigurationForm()
-        {
-            // return current form
-            return json_encode(
-                [
-                    'elements' => $this->FormHead(),
-                    'actions'  => $this->FormActions(),
-                    'status'   => $this->FormStatus()]
-            );
-        }
+    public function ReceiveData($JSONString)
+    {
+        $data = json_decode($JSONString);
+        IPS_LogMessage('Device RECV', utf8_decode($data->Buffer));
+    }
 
-        /**
-         * return form configurations on configuration step
-         *
-         * @return array
-         */
-        protected function FormHead()
-        {
-            $form = [];
-            return $form;
-        }
+    /**
+     * build configuration form
+     *
+     * @return string
+     */
+    public function GetConfigurationForm()
+    {
+        // return current form
+        return json_encode(
+            [
+                'elements' => $this->FormHead(),
+                'actions' => $this->FormActions(),
+                'status' => $this->FormStatus()]
+        );
+    }
 
-        /**
-         * return form actions by token
-         *
-         * @return array
-         */
-        protected function FormActions()
-        {
-            $form = [];
-            return $form;
-        }
+    /**
+     * return form configurations on configuration step
+     *
+     * @return array
+     */
+    protected function FormHead()
+    {
+        $form = [];
+        return $form;
+    }
 
-        /**
-         * return from status
-         *
-         * @return array
-         */
-        protected function FormStatus()
-        {
-            $form = [
-                [
-                    'code'    => IS_CREATING,
-                    'icon'    => 'inactive',
-                    'caption' => 'Creating instance.'],
-                [
-                    'code'    => IS_ACTIVE,
-                    'icon'    => 'active',
-                    'caption' => 'Remote 3 Core Manager created.'],
-                [
-                    'code'    => IS_INACTIVE,
-                    'icon'    => 'inactive',
-                    'caption' => 'interface closed.']];
+    /**
+     * return form actions by token
+     *
+     * @return array
+     */
+    protected function FormActions()
+    {
+        $form = [];
+        return $form;
+    }
 
-            return $form;
-        }
-	}
+    /**
+     * return from status
+     *
+     * @return array
+     */
+    protected function FormStatus()
+    {
+        $form = [
+            [
+                'code' => IS_CREATING,
+                'icon' => 'inactive',
+                'caption' => 'Creating instance.'],
+            [
+                'code' => IS_ACTIVE,
+                'icon' => 'active',
+                'caption' => 'Remote 3 Core Manager created.'],
+            [
+                'code' => IS_INACTIVE,
+                'icon' => 'inactive',
+                'caption' => 'interface closed.']];
+
+        return $form;
+    }
+}
