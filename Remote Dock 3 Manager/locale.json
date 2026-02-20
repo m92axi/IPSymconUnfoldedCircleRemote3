@@ -1,6 +1,25 @@
 {
     "translations": {
         "de": {
+          "Remote 3 Core instance": "Remote 3 Core Instanz",
+          "Select your Remote 3 Core instance to automatically reuse its API key.": "Wähle deine Remote 3 Core Instanz, um deren API-Key automatisch zu übernehmen.",
+          "Host (IP)": "Host (IP)",
+          "WebSocket host": "WebSocket Host",
+          "API key": "API Key",
+          "Last sysinfo (raw JSON)": "Letzte Sysinfo (Raw JSON)",
+          "System information (read-only)": "Systeminformationen (nur lesbar)",
+          "Hostname": "Hostname",
+          "Port": "Port",
+          "HTTPS port": "HTTPS Port",
+          "WebSocket port": "WebSocket Port",
+          "WebSocket path": "WebSocket Pfad",
+          "WebSocket HTTPS host": "WebSocket HTTPS Host",
+          "WebSocket HTTPS port": "WebSocket HTTPS Port",
+          "Dock access token (WebSocket)": "Dock Access Token (WebSocket)",
+          "Fetch API key from selected Remote 3 Core": "API Key aus ausgewählter Remote 3 Core Instanz holen",
+          "Update WS client configuration": "WebSocket Client Konfiguration aktualisieren",
+          "Request Dock sysinfo (get_sysinfo)": "Dock Sysinfo anfordern (get_sysinfo)",
+          "Authenticate using API Key": "Mit API Key authentifizieren",
           "Creating instance.": "Instanz wird erstellt.",
           "Remote 3 Dock Manager created.": "Remote 3 Dock Manager erstellt.",
           "Interface closed.": "Schnittstelle geschlossen."

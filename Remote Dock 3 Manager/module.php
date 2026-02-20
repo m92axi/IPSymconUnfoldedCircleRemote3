@@ -32,47 +32,57 @@ class Remote3DockManager extends IPSModuleStrict
         // The Dock WebSocket API authenticates with an access token sent via an `auth` message.
         // We store that token in `api_key` attribute for reuse.
 
+        // 1) Manual override from property (user editable in form) has priority.
+        //    Keep attribute in sync so all send/auth logic uses the latest value.
+        $manualApiKey = trim($this->ReadPropertyString('api_key_display'));
         $apiKey = $this->ReadAttributeString('api_key');
+
+        if ($manualApiKey !== '') {
+            if ($manualApiKey !== $apiKey) {
+                $this->WriteAttributeString('api_key', $manualApiKey);
+                $this->SendDebug(__FUNCTION__, '🔁 Sync API key: property -> attribute (EnsureApiKey).', 0);
+            }
+            return true;
+        }
+
+        // 2) If we already have a stored attribute token, use it
         if ($apiKey !== '') {
             return true;
         }
 
-        // Prefer pulling token/API key from the selected Remote 3 Core instance
+        // 3) Try pulling from selected Remote 3 Core instance
         $coreInstanceId = (int)$this->ReadPropertyInteger('core_instance_id');
         if ($coreInstanceId > 0) {
             $this->SendDebug(__FUNCTION__, '🔑 Trying to fetch API key from selected Remote 3 Core instance #' . $coreInstanceId . '…', 0);
-            $this->UpdateApiKeyFromCore($coreInstanceId);
+            $this->UpdateApiKeyFromCoreById($coreInstanceId);
             $apiKey = $this->ReadAttributeString('api_key');
             if ($apiKey !== '') {
                 return true;
             }
-            $this->SendDebug(__FUNCTION__, '⚠️ Could not fetch API key from Remote 3 Core. Falling back to manual token field.', 0);
+            $this->SendDebug(__FUNCTION__, '⚠️ Could not fetch API key from Remote 3 Core.', 0);
         }
 
-        $host = $this->ReadPropertyString('host');
-        $token = $this->ReadPropertyString('web_config_pass');
-
-        if ($host === '' || $token === '') {
-            $this->SendDebug(__FUNCTION__, '⏸️ Token not available yet (Host/Token missing).', 0);
-            return false;
-        }
-
-        // Treat the entered password field as Dock access token.
-        $this->WriteAttributeString('api_key', $token);
-        $this->SendDebug(__FUNCTION__, '✅ Token stored for Dock WebSocket authentication.', 0);
-        return true;
+        $this->SendDebug(__FUNCTION__, '⏸️ API key not available yet (manual empty and core not selected/returned empty).', 0);
+        return false;
     }
 
     /**
-     * Fetch API key from the selected Remote 3 Core instance and store it in this instance.
+     * Fetch API key from the selected Remote 3 Core instance (property `core_instance_id`)
+     * and store it in this instance.
      * The selected instance must provide the public function UCR_GetApiKey(int $id): string.
      */
-    public function UpdateApiKeyFromCore(int $coreInstanceId = 0): void
+    public function UpdateApiKeyFromCore(): void
     {
-        if ($coreInstanceId <= 0) {
-            $coreInstanceId = (int)$this->ReadPropertyInteger('core_instance_id');
-        }
+        $coreInstanceId = (int)$this->ReadPropertyInteger('core_instance_id');
+        $this->SendDebug(__FUNCTION__, '🔑 Fetch API key requested. Selected core_instance_id=' . $coreInstanceId, 0);
+        $this->UpdateApiKeyFromCoreById($coreInstanceId);
+    }
 
+    /**
+     * Internal helper to fetch and store the API key from a given Remote 3 Core instance id.
+     */
+    public function UpdateApiKeyFromCoreById(int $coreInstanceId): void
+    {
         if ($coreInstanceId <= 0 || !@IPS_InstanceExists($coreInstanceId)) {
             $this->SendDebug(__FUNCTION__, '⏸️ No valid Remote 3 Core instance selected.', 0);
             return;
@@ -134,9 +144,7 @@ class Remote3DockManager extends IPSModuleStrict
         $this->RegisterAttributeString('sysinfo_raw', '');
         $this->RegisterAttributeString('sysinfo_last_req_id', '');
         $this->RegisterAttributeInteger('dock_msg_id', 0);
-
-        $this->RegisterPropertyString('web_config_user', 'web-configurator');
-        $this->RegisterPropertyString('web_config_pass', '');
+        $this->RegisterPropertyString('api_key_display', '');
 
         //We need to call the RegisterHook function on Kernel READY
         $this->RegisterMessage(0, IPS_KERNELMESSAGE);
@@ -154,16 +162,24 @@ class Remote3DockManager extends IPSModuleStrict
         parent::ApplyChanges();
 
         $host = $this->ReadPropertyString('host');
-        $pass = $this->ReadPropertyString('web_config_pass');
 
         // If setup is incomplete, keep module inactive and do not touch parent configuration.
-        if ($host === '' || $pass === '') {
-            $this->SendDebug(__FUNCTION__, '⏸️ Setup incomplete (Host/Password missing) – waiting for user input.', 0);
+        if ($host === '') {
+            $this->SendDebug(__FUNCTION__, '⏸️ Setup incomplete (Host missing) – waiting for user input.', 0);
             $this->SetStatus(IS_INACTIVE);
             if (method_exists($this, 'ReloadForm')) {
                 $this->ReloadForm();
             }
             return;
+        }
+
+        // Sync: if user changed the API key property, mirror it into the attribute used for sending/auth.
+        $propApiKey = trim($this->ReadPropertyString('api_key_display'));
+        $attrApiKey = $this->ReadAttributeString('api_key');
+
+        if ($propApiKey !== '' && $propApiKey !== $attrApiKey) {
+            $this->SendDebug(__FUNCTION__, '🔁 Sync API key: property -> attribute', 0);
+            $this->WriteAttributeString('api_key', $propApiKey);
         }
 
         // Setup seems complete – ensure Dock access token exists.
@@ -196,7 +212,7 @@ class Remote3DockManager extends IPSModuleStrict
     public function GetConfigurationForParent(): string
     {
         $host = $this->ReadPropertyString('host');
-        $pass = $this->ReadPropertyString('web_config_pass');
+        $pass = $this->ReadAttributeString('api_key');
 
         // If setup is incomplete (host and/or token missing), still configure the WS client URL
         // with the best-known host so the parent does not show a misleading 127.0.0.1.
@@ -373,6 +389,38 @@ class Remote3DockManager extends IPSModuleStrict
 
         $this->SendDebug(__FUNCTION__, '➡️ Sending dock msg: ' . json_encode($payload, JSON_UNESCAPED_SLASHES), 0);
         $this->SendToWebSocket($payload);
+    }
+
+    /**
+     * Dock authentication message (per Dock AsyncAPI spec):
+     *   {"type":"auth","token":"..."}
+     */
+    private function SendAuth(string $token): void
+    {
+        $token = trim($token);
+        $len = strlen($token);
+
+        // Per Dock AsyncAPI spec: token length 4..40 characters
+        if ($len === 0) {
+            $this->SendDebug(__FUNCTION__, '❌ Empty token – cannot authenticate.', 0);
+            return;
+        }
+        if ($len < 4 || $len > 40) {
+            $this->SendDebug(
+                __FUNCTION__,
+                '❌ Token length invalid (' . $len . '). The Dock API expects an API access token with 4..40 characters. ' .
+                'This is NOT the same as the Remote 3 REST API key. Please enter the Dock API access token.',
+                0
+            );
+            return;
+        }
+
+        // Do not log the token in plain text
+        $this->SendDebug(__FUNCTION__, '🔐 Sending auth message: {"type":"auth","token":"***"} (len=' . $len . ')', 0);
+        $this->SendToWebSocket([
+            'type' => 'auth',
+            'token' => $token
+        ]);
     }
 
     // --- Dock WebSocket API: documented requests -----------------------------------
@@ -574,22 +622,41 @@ class Remote3DockManager extends IPSModuleStrict
      * Triggers Dock WebSocket authentication using a provided access token.
      * Useful for manual testing from scripts.
      */
-    public function Authenticate(string $token): void
+    public function Authenticate(): void
     {
-        $token = trim($token);
+        // Prefer the editable property if present; keep attribute synced.
+        $prop = trim($this->ReadPropertyString('api_key_display'));
+        if ($prop !== '') {
+            $this->WriteAttributeString('api_key', $prop);
+        }
+
+        $token = trim($this->ReadAttributeString('api_key'));
         if ($token === '') {
-            $this->SendDebug(__FUNCTION__, '❌ Empty token provided – cannot authenticate.', 0);
+            $this->SendDebug(__FUNCTION__, '❌ Empty token – cannot authenticate.', 0);
             return;
         }
 
-        // Store token for reuse
-        $this->WriteAttributeString('api_key', $token);
-        $this->SendDebug(__FUNCTION__, '🔐 Sending auth with provided token (stored in attribute api_key).', 0);
+        $this->SendDebug(__FUNCTION__, '🔐 Authenticate(): sending Dock auth message using the currently stored Dock API access token.', 0);
+        $this->SendAuth($token);
+    }
 
-        $this->SendToWebSocket([
-            'type' => 'auth',
-            'token' => $token
-        ]);
+    public function AuthenticateWithToken(string $token): void
+    {
+        $token = trim($token);
+        if ($token === '') {
+            $this->SendDebug(__FUNCTION__, '❌ Empty token – cannot authenticate.', 0);
+            return;
+        }
+
+        // Store token for reuse and keep form property in sync where possible.
+        $this->WriteAttributeString('api_key', $token);
+        $this->SendDebug(__FUNCTION__, '🔐 AuthenticateWithToken(): token stored to attribute api_key.', 0);
+
+        $this->SendAuth($token);
+
+        if (method_exists($this, 'ReloadForm')) {
+            $this->ReloadForm();
+        }
     }
 
 
@@ -766,16 +833,13 @@ class Remote3DockManager extends IPSModuleStrict
         // Dock WebSocket API: server sends `auth_required` right after connect.
         // We must respond with `{"type":"auth","token":"..."}`.
         if (($payload['type'] ?? '') === 'auth_required') {
-            $this->SendDebug(__FUNCTION__, '🔐 Dock requested authentication (auth_required).', 0);
+            $this->SendDebug(__FUNCTION__, '🔐 Dock requested authentication (auth_required). Sending {"type":"auth","token":"..."}.', 0);
 
             if ($this->EnsureApiKey()) {
-                $token = $this->ReadAttributeString('api_key');
-                $this->SendToWebSocket([
-                    'type' => 'auth',
-                    'token' => $token
-                ]);
+                $token = (string)$this->ReadAttributeString('api_key');
+                $this->SendAuth($token);
             } else {
-                $this->SendDebug(__FUNCTION__, '⏸️ Cannot authenticate yet (Host/Token missing).', 0);
+                $this->SendDebug(__FUNCTION__, '⏸️ Cannot authenticate yet (Token missing).', 0);
             }
             return '';
         }
@@ -885,19 +949,19 @@ class Remote3DockManager extends IPSModuleStrict
 
         $form = [];
 
-        // Select Remote 3 Core instance to pull API key from
-        $form[] = [
-            'type' => 'SelectInstance',
-            'name' => 'core_instance_id',
-            'caption' => 'Remote 3 Core instance',
-            'moduleID' => '{C810D534-2395-7C43-D0BE-6DEC069B2516}',
-            'onChange' => 'UCD_UpdateApiKeyFromCore($id, $core_instance_id);'
-        ];
-
-        $form[] = [
-            'type' => 'Label',
-            'caption' => 'Select your Remote 3 Core instance to automatically reuse its API key.'
-        ];
+        // --- Optional: Remote 3 Core instance API key reuse (hidden for now) ---
+        //
+        // $form[] = [
+        //     'type' => 'SelectInstance',
+        //     'name' => 'core_instance_id',
+        //     'caption' => 'Remote 3 Core instance',
+        //     'moduleID' => '{C810D534-2395-7C43-D0BE-6DEC069B2516}'
+        // ];
+        //
+        // $form[] = [
+        //     'type' => 'Label',
+        //     'caption' => 'Select your Remote 3 Core instance to automatically reuse its API key.'
+        // ];
 
         // Manual setup: allow entering host + websocket host
         if ($manualSetup) {
@@ -937,7 +1001,12 @@ class Remote3DockManager extends IPSModuleStrict
             ];
 
             $form[] = $ro('hostname', 'Hostname');
-            $form[] = $ro('host', 'Host (IP)');
+            $form[] = [
+                'type' => 'ValidationTextBox',
+                'name' => 'host',
+                'caption' => 'Host (IP)',
+                'enabled' => true
+            ];
             $form[] = $ro('port', 'Port');
             $form[] = $ro('https_port', 'HTTPS port');
 
@@ -954,8 +1023,7 @@ class Remote3DockManager extends IPSModuleStrict
                 'type' => 'ValidationTextBox',
                 'name' => 'api_key_display',
                 'caption' => 'API key',
-                'value' => $this->ReadAttributeString('api_key'),
-                'enabled' => false
+                'enabled' => true
             ];
             $form[] = [
                 'type' => 'ValidationTextBox',
@@ -965,14 +1033,6 @@ class Remote3DockManager extends IPSModuleStrict
                 'enabled' => false
             ];
         }
-
-        // Password is always editable, but is now the Dock access token.
-        $form[] = [
-            'type' => 'ValidationTextBox',
-            'name' => 'web_config_pass',
-            'caption' => 'Dock access token (WebSocket)',
-            'enabled' => true
-        ];
 
         return $form;
     }
@@ -985,11 +1045,12 @@ class Remote3DockManager extends IPSModuleStrict
     protected function FormActions(): array
     {
         return [
-            [
-                'type' => 'Button',
-                'caption' => 'Fetch API key from selected Remote 3 Core',
-                'onClick' => 'UCD_UpdateApiKeyFromCore($id);'
-            ],
+            // --- Optional: Remote 3 Core instance API key reuse (hidden for now) ---
+            // [
+            //     'type' => 'Button',
+            //     'caption' => 'Fetch API key from selected Remote 3 Core',
+            //     'onClick' => 'UCD_UpdateApiKeyFromCore($id);'
+            // ],
             [
                 'type' => 'Button',
                 'caption' => 'Update WS client configuration',
@@ -1002,8 +1063,8 @@ class Remote3DockManager extends IPSModuleStrict
             ],
             [
                 'type' => 'Button',
-                'caption' => 'Authenticate using entered Dock token',
-                'onClick' => 'UCD_Authenticate($id, IPS_GetProperty($id, "web_config_pass"));'
+                'caption' => 'Authenticate using API Key',
+                'onClick' => 'UCD_Authenticate($id);'
             ]
         ];
     }
