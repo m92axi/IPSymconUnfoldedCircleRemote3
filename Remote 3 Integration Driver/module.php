@@ -2022,19 +2022,34 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
         $serviceName = 'Symcon';
         $serviceType = '_uc-integration._tcp';
+        $servicePort = self::DEFAULT_WS_PORT;
 
-        $entries = array_filter($entries, fn($e) => !($e['Name'] === $serviceName && $e['RegType'] === $serviceType)
-        );
+        // Prevent duplicates:
+        // If there is already any _uc-integration._tcp service on the same port, do NOT add another one.
+        // Reason: Users may already have created/edited the entry manually in DNS-SD (as in the screenshot),
+        // and adding a second entry on the same port is confusing for discovery.
+        $existingOnPort = array_filter($entries, function ($e) use ($serviceType, $servicePort) {
+            $regType = $e['RegType'] ?? '';
+            $port = (int)($e['Port'] ?? 0);
+            return ($regType === $serviceType) && ($port === $servicePort);
+        });
+
+        if (!empty($existingOnPort)) {
+            $names = array_map(fn($e) => ($e['Name'] ?? '?') . '@' . ($e['Port'] ?? '?'), array_values($existingOnPort));
+            $this->SendDebug(__FUNCTION__, 'ℹ️ mDNS-Eintrag existiert bereits (RegType=' . $serviceType . ', Port=' . $servicePort . '): ' . json_encode($names) . ' – kein weiterer Eintrag wird hinzugefügt.', 0);
+            return;
+        }
 
         $first = $this->GetSymconFirstName();
 
-        $entries[] = [
+        $newEntry = [
             'Name' => $serviceName,
             'RegType' => $serviceType,
             'Domain' => '',
             'Host' => '',
-            'Port' => self::DEFAULT_WS_PORT,
+            'Port' => $servicePort,
             'TXTRecords' => [
+                // Keep TXT minimal and stable. User can still edit it in the DNS-SD instance UI if desired.
                 ['Value' => 'name=Symcon von ' . $first],
                 ['Value' => 'ver=' . self::Unfolded_Circle_Driver_Version],
                 ['Value' => 'developer=Fonzo'],
@@ -2042,10 +2057,12 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             ]
         ];
 
+        $entries[] = $newEntry;
+
         IPS_SetProperty($mdnsID, 'Services', json_encode(array_values($entries)));
         IPS_ApplyChanges($mdnsID);
 
-        $this->SendDebug(__FUNCTION__, '✅ mDNS-Eintrag hinzugefügt: ' . json_encode(end($entries)), 0);
+        $this->SendDebug(__FUNCTION__, '✅ mDNS-Eintrag hinzugefügt: ' . json_encode($newEntry), 0);
     }
 
     private function UnregisterMdnsService()
