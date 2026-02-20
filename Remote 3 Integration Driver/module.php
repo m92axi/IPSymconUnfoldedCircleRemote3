@@ -5055,6 +5055,11 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                         'type' => 'Button',
                         'caption' => '🔧 Manually register driver with Remote 3',
                         'onClick' => 'UCR_RegisterDriverManually($id);'
+                    ],
+                    [
+                        'type' => 'ValidationTextBox',
+                        'name' => 'calBackIP',
+                        'caption' => 'Callback IP (IP of Symcon Server, only needed if automatic DNS name is not working)',
                     ]
                 ]
             ]
