@@ -4044,7 +4044,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                     'header' => [
                         'Content-Type: application/json',
                         'Accept: application/json',
-                        "Authorization: $apiKey"
+                        'Authorization: Bearer ' . $apiKey
                     ],
                     'content' => json_encode($payload)
                 ]
