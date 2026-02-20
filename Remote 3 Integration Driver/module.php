@@ -4015,6 +4015,8 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             }
             // Ende Block
 
+            // Symcon Host from Experten Settings imputt
+            $hostValue = $this->ReadPropertyString('callback_IP');
 
             $this->SendDebugExtended(__FUNCTION__, "🔍 Registriere Treiber bei $ip (Symcon Host: $hostValue)", 0);
             $this->SendDebugExtended(__FUNCTION__, "📡 API-Key: $apiKey | Token: $token", 0);
