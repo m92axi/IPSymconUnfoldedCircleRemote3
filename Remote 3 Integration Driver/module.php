@@ -3989,6 +3989,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
      */
     public function RegisterDriverManually()
     {
+        $this->RefreshRemoteCores();
         $remotes = json_decode($this->ReadAttributeString('remote_cores'), true);
         $token = $this->ReadAttributeString('token');
 
@@ -5060,6 +5061,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                         'type' => 'ValidationTextBox',
                         'name' => 'calBackIP',
                         'caption' => 'Callback IP (IP of Symcon Server, only needed if automatic DNS name is not working)',
+
                     ]
                 ]
             ]
