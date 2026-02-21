@@ -4020,7 +4020,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $token = $this->ReadAttributeString('token');
 
         if (!is_array($remotes)) {
-            $this->SendDebug(__FUNCTION__, "❌ Keine Remote-Instanzen gefunden", 0);
+            $this->SendDebug(__FUNCTION__, "❌ Keine Core Manager-Instanzen gefunden", 0);
             return;
         }
 
