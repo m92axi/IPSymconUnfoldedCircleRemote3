@@ -452,13 +452,17 @@ class Remote3Device extends IPSModuleStrict
             return [];
         }
         $this->SendDebug(__FUNCTION__, '📦 Antwortdaten: ' . json_encode($result['data']), 0);
-        $this->WriteAttributeString('activities', json_encode($result['data']));
+        $activitiesList = $result['data']['results'] ?? $result['data'];
+        if (!is_array($activitiesList)) {
+            $activitiesList = [];
+        }
+        $this->WriteAttributeString('activities', json_encode($activitiesList));
         // Update activity profile after activities are refreshed
         $this->UpdateActivityProfile();
         if (method_exists($this, 'ReloadForm')) {
             $this->ReloadForm();
         }
-        return $result['data'];
+        return $activitiesList;
     }
 
     /**

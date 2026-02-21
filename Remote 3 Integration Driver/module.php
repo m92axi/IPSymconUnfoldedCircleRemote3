@@ -68,7 +68,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $this->RegisterPropertyString('sensor_mapping', '[]');
         $this->RegisterPropertyString('ip_whitelist', '[]');
 
-        // Propertys fpr Epert Settings
+        // Properties for expert settings
         $this->RegisterPropertyBoolean('extended_debug', false);
         $this->RegisterPropertyString('callback_IP', '');
 
@@ -101,6 +101,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             $this->RegisterMdnsService();
             $this->SetTimerInterval("PingDeviceState", 30000); // alle 30 Sekunden den Status senden
             $this->SetTimerInterval("UpdateAllEntityStates", 15000); // alle 15 Sekunden den Status senden
+            $this->EnsureTokenInitialized();
         }
         // Register for variable updates for all switches
         $switchMapping = json_decode($this->ReadPropertyString('switch_mapping'), true);
@@ -112,6 +113,26 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             }
         }
     }
+
+    /**
+     * Ensures that a token exists.
+     * Generates a token only once (first-time instance setup) and never overwrites an existing token.
+     */
+    private function EnsureTokenInitialized(): void
+    {
+        $token = (string)$this->ReadAttributeString('token');
+        if ($token !== '') {
+            return;
+        }
+
+        $token = bin2hex(random_bytes(16)); // 32 characters hex string
+        $this->WriteAttributeString('token', $token);
+        $this->SendDebug(__FUNCTION__, '🔑 Initial token generated: ' . $token, 0);
+
+        // If the configuration form is open, reflect the value immediately.
+        $this->UpdateFormField('token', 'value', $token);
+    }
+
 
     public function GetConfigurationForParent(): string
     {
@@ -3269,6 +3290,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             $this->SetTimerInterval("PingDeviceState", 30000); // alle 30 Sekunden den Status senden
             $this->SetTimerInterval("UpdateAllEntityStates", 15000); // alle 15 Sekunden den Status senden
             $this->SendInitialOnlineEventsForAllClients();
+            $this->EnsureTokenInitialized();
         }
         if ($Message == VM_UPDATE) {
             $this->SendDebug(__FUNCTION__, "📣 Variablen-Update empfangen: ID $SenderID", 0);
@@ -4001,22 +4023,15 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         }
 
         foreach ($remotes as $remote) {
-            
-            
+
+
             $ip = $remote['host'];
             $apiKey = $remote['api_key'];
-            
-            // Nach folgender Code macht kein Sinn da $this->InstanceID nicht die ID der Remote-Instanz sonder der Integration Instant ist.
-            $hostIdent = @IPS_GetObjectIDByIdent("host", $this->InstanceID);
-            $hostValue = is_int($hostIdent) && $hostIdent > 0 ? @GetValue($hostIdent) : '';
-            if ($hostValue === false || $hostValue === '') {
-                // Fallback: Host aus der Remote-Instanz verwenden
-                $hostValue = $ip;
-            }
-            // Ende Block
 
-            // Symcon Host from Experten Settings imputt
-            $hostValue = $this->ReadPropertyString('callback_IP');
+            $hostValue = trim($this->ReadPropertyString('callback_IP'));
+            if ($hostValue === '') {
+                $hostValue = $ip; // Fallback: Remote IP
+            }
 
             $this->SendDebugExtended(__FUNCTION__, "🔍 Registriere Treiber bei $ip (Symcon Host: $hostValue)", 0);
             $this->SendDebugExtended(__FUNCTION__, "📡 API-Key: $apiKey | Token: $token", 0);
@@ -4206,19 +4221,29 @@ class Remote3IntegrationDriver extends IPSModuleStrict
      */
     private function GetKnownClientIPOptions(): array
     {
-        $sessions = $this->readSessions();  // uses the persistent client_sessions attribute
+        $sessions = $this->readSessions();
         $options = [];
 
         foreach ($sessions as $clientKey => $info) {
-            if (strpos($clientKey, ':') !== false) {
-                [$ip,] = explode(':', $clientKey, 2);
-            } else {
-                $ip = $clientKey;
-            }
+            $clientKey = (string)$clientKey;
+            $ip = $clientKey;
+            $this->SendDebug(__FUNCTION__, '🔎 Option source key=' . $clientKey . ' (colons=' . substr_count($clientKey, ':') . ')', 0);
 
-            if (!in_array($ip, array_column($options, 'value'))) {
+            // Key format: [IPv6]:port
+            if (preg_match('/^\[(.+)]:(\d+)$/', $clientKey, $m)) {
+                $ip = $m[1];
+            } // Key format: IPv4:port (exactly one colon)
+            elseif (substr_count($clientKey, ':') === 1 && preg_match('/^([^:]+):(\d+)$/', $clientKey, $m)) {
+                $ip = $m[1];
+            }
+            // Otherwise: treat as pure IP (IMPORTANT: IPv6 contains many colons)
+
+            $this->SendDebug(__FUNCTION__, '✅ Option parsed ip=' . $ip, 0);
+            // Deduplicate
+            $existingValues = array_column($options, 'value');
+            if (!in_array($ip, $existingValues, true)) {
                 $caption = $ip;
-                if (!empty($info['model'])) {
+                if (is_array($info) && !empty($info['model'])) {
                     $caption .= ' (' . $info['model'] . ')';
                 }
                 $options[] = [
@@ -4229,6 +4254,20 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         }
 
         return $options;
+    }
+
+    /**
+     * Dumps raw and parsed client_sessions attribute and triggers GetKnownClientIPOptions debug.
+     */
+    public function DumpClientSessions(): void
+    {
+        $raw = $this->ReadAttributeString('client_sessions');
+        $this->SendDebug(__FUNCTION__, '📦 client_sessions (raw)=' . $raw, 0);
+
+        $parsed = $this->readSessions();
+        $this->SendDebug(__FUNCTION__, '📦 client_sessions (parsed)=' . json_encode($parsed), 0);
+
+        $this->GetKnownClientIPOptions(); // triggers detailed option logs
     }
 
     /**
@@ -4316,6 +4355,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
      */
     protected function FormHead()
     {
+        $this->EnsureTokenInitialized();
         $token = $this->ReadAttributeString('token');
 
         $form = [
@@ -4328,6 +4368,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 'name' => 'token',
                 'caption' => '🔑 Token',
                 'value' => $token,
+                'enabled' => false
             ],
             [
                 'type' => 'PopupButton',
@@ -5071,8 +5112,12 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                     [
                         'type' => 'ValidationTextBox',
                         'name' => 'callback_IP',
-                        'caption' => 'Callback IP (IP of Symcon Server, only needed if automatic DNS name is not working)',
-
+                        'caption' => 'Callback IP (IP of Symcon Server, only needed if automatic DNS name is not working)'
+                    ],
+                    [
+                        'type' => 'Button',
+                        'caption' => '🧪 Debug: Dump client_sessions',
+                        'onClick' => 'UCR_DumpClientSessions($id);'
                     ]
                 ]
             ]

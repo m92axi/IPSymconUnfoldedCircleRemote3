@@ -59,7 +59,7 @@ http://{IP-Symcon IP}:3777/console/
 
 Click the module store icon in the upper right corner.
 
-![Store](img/store_icon.png?raw=true "open store")
+![store_icon.png](img/store_icon.png)
 
 In the search field enter:
 
@@ -67,11 +67,11 @@ In the search field enter:
 Unfolded Circle Remote 3
 ```
 
-![Store](img/module_store_search_en.png?raw=true "module search")
+![module_store_search_en.png](img/module_store_search_en.png)
 
 Select the module and click _Install_.
 
-![Store](img/install_en.png?raw=true "install")
+![install_en.png](img/install_en.png)
 
 ---
 
@@ -92,6 +92,100 @@ If a device is found, you can create the corresponding instance via _Create_:
 Depending on the configuration, a WebSocket Client instance will be used or created automatically for communication.
 
 Further configuration is done directly within the respective instance.
+
+### Initial Setup
+
+#### Setting up the Remote 3
+
+Ensure that the Remote 3 is awake during the entire setup process. The display must be turned on.  
+If available, it is recommended to place the Remote 3 in the Dock 3 to ensure stable power and network connectivity.
+To begin, right-click in the IP-Symcon object tree and select:
+*Add Object* → *Instance*
+
+Then create a new instance of type **Remote 3 Discovery**.
+
+![Add Remote Discovery.png](img/Add%20Remote%20Discovery.png)
+
+After opening the Discovery instance, enter the four-digit web password of the Remote 3 in the field at the top.  
+This password is displayed directly on the screen of the Remote 3 during the pairing process.
+
+![Discovery Input Password.png](img/Discovery%20Input%20Password.png)
+
+Once the discovery process has completed, a list of detected devices will be shown.
+
+![Discovery.png](img/Discovery.png)
+
+Select the device you would like to create in Symcon and click **Create**.
+
+Before continuing, verify again that the Remote 3 is awake and the display remains active.
+
+In the object tree, open the newly created instance named:
+
+**Remote 3 Core Manager Remotexxx**
+
+At the top of the configuration window, you may see the notice:
+
+![Parent Inactive.png](img/Parent%20Inactive.png)
+
+Click **Configure**.  
+A configuration dialog will open and ask for confirmation. Confirm with **OK**.
+
+Now enable the instance by switching:
+
+![Active Button.png](img/Active%20Button.png)
+
+to **On**.
+
+Finally, click:
+
+![Apply Changes.png](img/Apply%20Changes.png)
+
+**Apply Changes**.
+
+The Remote 3 is now successfully configured within Symcon.
+
+You can switch to the Remote 3 instance in the object tree to review detailed system information such as:
+
+- Online status
+- Battery level
+- Display state
+- Other system-related information
+
+All state changes of the Remote 3 are automatically synchronized and updated in real time within Symcon.
+
+#### Setting up the Remote 3 Integration Driver
+
+The **Remote 3 Integration Driver** allows devices managed by Symcon to be imported into the Remote 3 platform.  
+Once configured, these devices can be controlled directly from the Remote 3 user interface.
+
+To create the Integration Driver:
+
+Right-click in the object tree and select:
+
+*Add Object* → *Instance*
+
+Then create a new instance of type **Remote 3 Integration Driver**.
+
+A configuration window will open:
+
+![Server Socket.png](img/Server%20Socket.png)
+
+Activate the instance by setting **Active** to **On**, then confirm with **OK**.
+
+After activation, the instance will display a list of supported device types that can be exposed to the Remote 3.
+
+For a Symcon device to be available for import and control on the Remote 3, it must be assigned to the appropriate
+device type within the **Remote 3 Integration Driver**.
+
+![Remote 3 Integration Driver.png](img/Remote%203%20Integration%20Driver.png)
+
+Open the desired device type and click **Add** to assign a device.
+
+Depending on the selected device type, specific variables of the Symcon device must be mapped once during setup.  
+These mappings define how the Remote 3 interacts with the device (e.g. on/off state, brightness, position, media
+control, etc.).
+
+After completing this configuration, the device will be available for import within the Remote 3 interface.
 
 ---
 

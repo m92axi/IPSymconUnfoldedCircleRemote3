@@ -42,9 +42,32 @@ class WebSocketUtils
         return $head . $text;
     }
 
-    public static function PackPong(): string
+    /**
+     * Build a Pong frame.
+     * IMPORTANT: Per RFC6455, a Pong sent in response to a Ping MUST include
+     * the exact same application data (payload) as the Ping.
+     */
+    public static function PackPong(string $payload = ''): string
     {
-        return WebSocketUtils::BuildFrame(self::OPCODE_PONG);
+        return self::BuildFrame(self::OPCODE_PONG, $payload);
+    }
+
+    /**
+     * If the given raw frame is a Ping, return a Pong with the same payload.
+     * Returns null if the frame is not a valid Ping.
+     */
+    public static function BuildPongResponseForPingFrame(string $data, ?callable $debug = null): ?string
+    {
+        $unpacked = self::UnpackData($data, $debug);
+        if ($unpacked === null) {
+            return null;
+        }
+        if ($unpacked['opcode'] !== self::OPCODE_PING) {
+            return null;
+        }
+
+        // Echo ping payload back in pong (required by RFC6455)
+        return self::PackPong($unpacked['payload']);
     }
 
     public static function DebugTest(?callable $debug = null): void
@@ -118,7 +141,11 @@ class WebSocketUtils
                     }
                     return null;
                 }
-                $payloadLen = unpack('J', substr($data, 2, 8))[1];
+
+                // 64-bit unsigned length in network byte order (big-endian)
+                $arr = unpack('N2', substr($data, 2, 8));
+                $payloadLen = ($arr[1] << 32) | $arr[2];
+
                 $offset += 8;
                 if ($debug !== null) {
                     $debug(__FUNCTION__, 'PayloadLen: ' . $payloadLen);
