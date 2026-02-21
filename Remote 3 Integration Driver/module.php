@@ -4199,19 +4199,29 @@ class Remote3IntegrationDriver extends IPSModuleStrict
      */
     private function GetKnownClientIPOptions(): array
     {
-        $sessions = $this->readSessions();  // uses the persistent client_sessions attribute
+        $sessions = $this->readSessions();
         $options = [];
 
         foreach ($sessions as $clientKey => $info) {
-            if (strpos($clientKey, ':') !== false) {
-                [$ip,] = explode(':', $clientKey, 2);
-            } else {
-                $ip = $clientKey;
-            }
+            $clientKey = (string)$clientKey;
+            $ip = $clientKey;
+            $this->SendDebug(__FUNCTION__, '🔎 Option source key=' . $clientKey . ' (colons=' . substr_count($clientKey, ':') . ')', 0);
 
-            if (!in_array($ip, array_column($options, 'value'))) {
+            // Key format: [IPv6]:port
+            if (preg_match('/^\[(.+)]:(\d+)$/', $clientKey, $m)) {
+                $ip = $m[1];
+            } // Key format: IPv4:port (exactly one colon)
+            elseif (substr_count($clientKey, ':') === 1 && preg_match('/^([^:]+):(\d+)$/', $clientKey, $m)) {
+                $ip = $m[1];
+            }
+            // Otherwise: treat as pure IP (IMPORTANT: IPv6 contains many colons)
+
+            $this->SendDebug(__FUNCTION__, '✅ Option parsed ip=' . $ip, 0);
+            // Deduplicate
+            $existingValues = array_column($options, 'value');
+            if (!in_array($ip, $existingValues, true)) {
                 $caption = $ip;
-                if (!empty($info['model'])) {
+                if (is_array($info) && !empty($info['model'])) {
                     $caption .= ' (' . $info['model'] . ')';
                 }
                 $options[] = [
@@ -4222,6 +4232,20 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         }
 
         return $options;
+    }
+
+    /**
+     * Dumps raw and parsed client_sessions attribute and triggers GetKnownClientIPOptions debug.
+     */
+    public function DumpClientSessions(): void
+    {
+        $raw = $this->ReadAttributeString('client_sessions');
+        $this->SendDebug(__FUNCTION__, '📦 client_sessions (raw)=' . $raw, 0);
+
+        $parsed = $this->readSessions();
+        $this->SendDebug(__FUNCTION__, '📦 client_sessions (parsed)=' . json_encode($parsed), 0);
+
+        $this->GetKnownClientIPOptions(); // triggers detailed option logs
     }
 
     /**
@@ -5064,8 +5088,12 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                     [
                         'type' => 'ValidationTextBox',
                         'name' => 'callback_IP',
-                        'caption' => 'Callback IP (IP of Symcon Server, only needed if automatic DNS name is not working)',
-
+                        'caption' => 'Callback IP (IP of Symcon Server, only needed if automatic DNS name is not working)'
+                    ],
+                    [
+                        'type' => 'Button',
+                        'caption' => '🧪 Debug: Dump client_sessions',
+                        'onClick' => 'UCR_DumpClientSessions($id);'
                     ]
                 ]
             ]
