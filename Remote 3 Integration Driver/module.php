@@ -568,7 +568,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
         // For string operations (headers), keep raw 1-byte string
         $payload = $buffer;
-        $this->SendDebugExtended(__FUNCTION__, '📥 Payload ' . $payload, 0);
+        
 
         // Minimal debug (visible without extended_debug)
         $typeLabel = match ($type) {
