@@ -835,8 +835,10 @@ class Remote3IntegrationDriver extends IPSModuleStrict
     private function FindDeviceInstanceByIp(string $guid, string $property, string $ip): int
     {
         $instanceIDs = IPS_GetInstanceListByModuleID($guid);
+        $this->SendDebugExtended(__FUNCTION__, "🔍 Suche nach Instanz mit GUID $guid, Ergebnis ist: " . json_encode($instanceIDs), 0);
         foreach ($instanceIDs as $id) {
             $prop = @IPS_GetProperty($id, $property);
+            $this->SendDebugExtended(__FUNCTION__, "🔎 Prüfe Instanz $id: $property = $prop", 0);
             if ($prop === $ip) {
                 $this->SendDebug(__FUNCTION__, "🎯 Gefundene Instanz für IP $ip: $id", 0);
                 return $id;
