@@ -1921,8 +1921,8 @@ class Remote3IntegrationDriver extends IPSModuleStrict
     private function PushPongToRemoteClient(string $data, string $clientIP, int $clientPort): void
     {
         // IMPORTANT: Never put binary / raw frame bytes into JSON. Always send HEX and let the parent (Server Socket) convert back to binary.
-        $bytes = mb_convert_encoding($data, 'UTF-8', 'ISO-8859-1');
-        $hex = bin2hex($bytes);
+        //$bytes = mb_convert_encoding($data, 'UTF-8', 'ISO-8859-1');
+        $hex = bin2hex($data);
 
         $payload = json_encode([
             'DataID' => '{C8792760-65CF-4C53-B5C7-A30FCC84FEFE}', // Server Socket
