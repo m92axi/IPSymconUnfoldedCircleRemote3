@@ -1162,11 +1162,114 @@ class Remote3CoreManager extends IPSModuleStrict
         return $this->CeckResponse($response);
     }
 
+    /**
+     * Universal REST call helper for development and scripting.
+     *
+     * This allows calling arbitrary Core REST endpoints from scripts without exposing all protected methods.
+     *
+     * Examples:
+     *  echo UCR_CallApi($id, 'GET', '/activities?page=1&limit=50');
+     *  echo UCR_CallApi($id, 'PUT', '/entities/my_entity/command', '{"entity_id":"my_entity","cmd_id":"power_toggle"}');
+     */
+    public function CallApi(string $method, string $endpoint, $params = null): string
+    {
+        $this->SendDebug(__FUNCTION__, 'method=' . $method . ' endpoint=' . $endpoint, 0);
+
+        // Allow params to be passed either as array or as JSON string
+        $payload = [];
+        if (is_string($params) && trim($params) !== '') {
+            $decoded = json_decode($params, true);
+            if (is_array($decoded)) {
+                $payload = $decoded;
+            } else {
+                // Keep raw string in debug, but do not fail hard
+                $this->SendDebug(__FUNCTION__, '⚠️ params JSON could not be decoded, ignoring params', 0);
+            }
+        } elseif (is_array($params)) {
+            $payload = $params;
+        }
+
+        $response = $this->SendRestRequest($method, $endpoint, $payload);
+        return $this->CeckResponse($response);
+    }
+
+    // === REST API Command Methods ===
+
     protected function CallGetActivities()
     {
-        $this->SendDebug(__FUNCTION__, '⏳ Requesting /activities...', 0);
-        $response = $this->SendRestRequest('GET', '/activities');
-        return $this->CeckResponse($response);
+        $this->SendDebug(__FUNCTION__, '⏳ Requesting /activities (paginated)...', 0);
+
+        $limit = 50;
+        $page = 1;
+        $all = [];
+        $seen = [];
+
+        // Hard safety cap to avoid infinite loops if the API behaves unexpectedly
+        $maxPages = 100;
+
+        while ($page <= $maxPages) {
+            $endpoint = '/activities?page=' . $page . '&limit=' . $limit;
+            $this->SendDebug(__FUNCTION__, '➡️ Page ' . $page . ' GET ' . $endpoint, 0);
+
+            $response = $this->SendRestRequest('GET', $endpoint);
+
+            if (!is_array($response)) {
+                $this->SendDebug(__FUNCTION__, '❌ Invalid response (not an array) on page ' . $page, 0);
+                // Return error structure through CeckResponse
+                return $this->CeckResponse($response);
+            }
+
+            // The API may return either:
+            // - { results: [...] }
+            // - { items: [...] }
+            // - { data: [...] }
+            // - [...] (direct array)
+            $items = [];
+            if (isset($response['results']) && is_array($response['results'])) {
+                $items = $response['results'];
+            } elseif (isset($response['items']) && is_array($response['items'])) {
+                $items = $response['items'];
+            } elseif (isset($response['data']) && is_array($response['data'])) {
+                $items = $response['data'];
+            } elseif (array_is_list($response)) {
+                $items = $response;
+            }
+
+            $count = is_array($items) ? count($items) : 0;
+            $this->SendDebug(__FUNCTION__, '⬅️ Page ' . $page . ' items=' . $count, 0);
+
+            if ($count === 0) {
+                break;
+            }
+
+            // De-duplicate by activity id if present, otherwise by JSON hash
+            foreach ($items as $a) {
+                if (is_array($a) && isset($a['activity_id'])) {
+                    $key = 'id:' . (string)$a['activity_id'];
+                } elseif (is_array($a) && isset($a['id'])) {
+                    $key = 'id:' . (string)$a['id'];
+                } else {
+                    $key = 'hash:' . md5(json_encode($a));
+                }
+
+                if (!isset($seen[$key])) {
+                    $seen[$key] = true;
+                    $all[] = $a;
+                }
+            }
+
+            // If fewer than limit came back, assume this is the last page
+            if ($count < $limit) {
+                break;
+            }
+
+            $page++;
+        }
+
+        $this->SendDebug(__FUNCTION__, '✅ Total activities collected: ' . count($all), 0);
+
+        // Return a single combined structure, keeping backward compatibility by using `results`
+        return $this->CeckResponse(['results' => $all]);
     }
 
     protected function CallSendEntityCommand($params)
