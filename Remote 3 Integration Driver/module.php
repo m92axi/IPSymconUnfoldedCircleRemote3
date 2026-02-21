@@ -5114,8 +5114,8 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                     [
                         'type' => 'ValidationTextBox',
                         'name' => 'callback_IP',
-                        'caption' => 'Callback IP (IP of Symcon Server, only needed if automatic DNS name is not working)'
-                        'width' => '90%',
+                        'caption' => 'Callback IP (IP of Symcon Server, only needed if automatic DNS name is not working)',
+                        'width' => '90%'
                     ],
                     [
                         'type' => 'Button',
