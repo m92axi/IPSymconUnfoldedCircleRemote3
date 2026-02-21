@@ -568,7 +568,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
         // For string operations (headers), keep raw 1-byte string
         $payload = $buffer;
-        
+
 
         // Minimal debug (visible without extended_debug)
         $typeLabel = match ($type) {
@@ -643,7 +643,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             $now = date('Y-m-d H:i:s');
             $this->SendDebugExtended(__FUNCTION__, "🔁 [$now] PING empfangen von $clientIP:$clientPort", 0);
             $pong = WebSocketUtils::PackPong();
-            // $this->SendDebug(__FUNCTION__, '📤 PONG (hex): ' . bin2hex($pong), 0);
+            $this->SendDebug(__FUNCTION__, '📤 PONG (hex): ' . bin2hex($pong), 0);
             // $this->SendDebug(__FUNCTION__, "📤 [$now] Sende echten PONG-Frame an $clientIP:$clientPort", 0);
             $this->PushPongToRemoteClient($pong, $clientIP, $clientPort);
             return '';
