@@ -68,6 +68,19 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $this->RegisterPropertyString('sensor_mapping', '[]');
         $this->RegisterPropertyString('ip_whitelist', '[]');
 
+        // --- Expert Debug / Debug Filtering ---
+        $this->RegisterPropertyBoolean('expert_debug', false);
+        $this->RegisterPropertyInteger('debug_level', 3); // 0=OFF,1=ERROR,2=WARN,3=INFO,4=TRACE
+        $this->RegisterPropertyBoolean('debug_filter_enabled', false);
+        $this->RegisterPropertyString('debug_topics', ''); // comma-separated topics; empty = all
+        $this->RegisterPropertyString('debug_entity_ids', ''); // comma-separated entity ids
+        $this->RegisterPropertyString('debug_var_ids', ''); // comma-separated var/object ids
+        $this->RegisterPropertyString('debug_client_ips', ''); // comma-separated IPs
+        $this->RegisterPropertyString('debug_text_filter', ''); // substring or regex
+        $this->RegisterPropertyBoolean('debug_text_is_regex', false);
+        $this->RegisterPropertyBoolean('debug_strict_match', true); // require match when any filter is set
+        $this->RegisterPropertyInteger('debug_throttle_ms', 0); // 0 disables throttling
+
         // Properties for expert settings
         $this->RegisterPropertyBoolean('extended_debug', false);
         $this->RegisterPropertyString('callback_IP', '');
@@ -488,7 +501,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
         switch ($method) {
             case 'CallGetVersion':
-                return $this->CallGetVersion();
+                // return $this->CallGetVersion();
             default:
                 $this->SendDebug(__FUNCTION__, "⚠️ Unbekannte Methode: $method", 0);
                 return json_encode(['error' => 'Unbekannter Fehler']);
@@ -4262,11 +4275,210 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         return 'data:image/png;base64,' . $base64;
     }
 
-    private function SendDebugExtended(string $function, string $message, int $format): void
+    // -----------------------------
+    // Expert Debug / Debug Filtering
+    // -----------------------------
+
+    private function ParseCsvList(string $value): array
     {
-        if ($this->ReadPropertyBoolean('extended_debug')) {
-            $this->SendDebug($function, $message, $format);
+        $value = trim($value);
+        if ($value === '') {
+            return [];
         }
+        $parts = array_map('trim', explode(',', $value));
+        $parts = array_filter($parts, fn($v) => $v !== '');
+        return array_values(array_unique($parts));
+    }
+
+    private function DebugFilterMatches(string $message, $data, string $topic, int $level): bool
+    {
+        // Level gate
+        $cfgLevel = (int)$this->ReadPropertyInteger('debug_level');
+        if ($cfgLevel <= 0) {
+            return false;
+        }
+        if ($level > $cfgLevel) {
+            return false;
+        }
+
+        // Topic gate (empty = allow all)
+        $topics = $this->ParseCsvList((string)$this->ReadPropertyString('debug_topics'));
+        if (!empty($topics)) {
+            $topicUpper = strtoupper($topic);
+            $topicsUpper = array_map('strtoupper', $topics);
+            if (!in_array($topicUpper, $topicsUpper, true)) {
+                return false;
+            }
+        }
+
+        // If filter not enabled, allow
+        if (!(bool)$this->ReadPropertyBoolean('debug_filter_enabled')) {
+            return true;
+        }
+
+        $entityIds = $this->ParseCsvList((string)$this->ReadPropertyString('debug_entity_ids'));
+        $varIds = $this->ParseCsvList((string)$this->ReadPropertyString('debug_var_ids'));
+        $clientIps = $this->ParseCsvList((string)$this->ReadPropertyString('debug_client_ips'));
+
+        $textFilter = (string)$this->ReadPropertyString('debug_text_filter');
+        $textIsRegex = (bool)$this->ReadPropertyBoolean('debug_text_is_regex');
+        $strict = (bool)$this->ReadPropertyBoolean('debug_strict_match');
+
+        // Prepare haystack
+        if (is_string($data)) {
+            $dataStr = $data;
+        } elseif (is_array($data) || is_object($data)) {
+            $dataStr = json_encode($data, JSON_UNESCAPED_SLASHES);
+        } else {
+            $dataStr = (string)$data;
+        }
+        $haystack = $message . ' ' . $dataStr;
+
+        $matches = [];
+
+        if (!empty($entityIds)) {
+            foreach ($entityIds as $e) {
+                if ($e !== '' && strpos($haystack, $e) !== false) {
+                    $matches[] = true;
+                    break;
+                }
+            }
+        }
+
+        if (!empty($varIds)) {
+            foreach ($varIds as $v) {
+                if ($v !== '' && strpos($haystack, (string)$v) !== false) {
+                    $matches[] = true;
+                    break;
+                }
+            }
+        }
+
+        if (!empty($clientIps)) {
+            foreach ($clientIps as $ip) {
+                if ($ip !== '' && strpos($haystack, $ip) !== false) {
+                    $matches[] = true;
+                    break;
+                }
+            }
+        }
+
+        if (trim($textFilter) !== '') {
+            if ($textIsRegex) {
+                $ok = @preg_match($textFilter, $haystack) === 1;
+                $matches[] = $ok;
+            } else {
+                $matches[] = (strpos($haystack, $textFilter) !== false);
+            }
+        }
+
+        // If no actual filter set besides enabled -> allow (avoid hiding everything)
+        $anyConfigured = !empty($entityIds) || !empty($varIds) || !empty($clientIps) || trim($textFilter) !== '';
+        if (!$anyConfigured) {
+            return true;
+        }
+
+        // Strict: require at least one match
+        if ($strict) {
+            return in_array(true, $matches, true);
+        }
+
+        return true;
+    }
+
+    private function DebugThrottleAllow(string $key): bool
+    {
+        $ms = (int)$this->ReadPropertyInteger('debug_throttle_ms');
+        if ($ms <= 0) {
+            return true;
+        }
+
+        $now = (int)floor(microtime(true) * 1000);
+        $bufKey = 'dbg_throttle_' . md5($key);
+        $last = (int)$this->GetBuffer($bufKey);
+
+        if ($last > 0 && ($now - $last) < $ms) {
+            return false;
+        }
+
+        $this->SetBuffer($bufKey, (string)$now);
+        return true;
+    }
+
+    /**
+     * Override SendDebug so ALL existing $this->SendDebug(...) calls go through the filter.
+     */
+    public function SendDebug($Message, $Data, $Format): bool
+    {
+        // If expert debug is OFF: keep old behavior, but allow debug_level=0 to silence.
+        if (!(bool)$this->ReadPropertyBoolean('expert_debug')) {
+            if ((int)$this->ReadPropertyInteger('debug_level') <= 0) {
+                return false;
+            }
+            return parent::SendDebug($Message, $Data, $Format);
+        }
+
+        // Determine topic+level heuristically
+        $msgStr = is_string($Message) ? $Message : (string)$Message;
+        $topic = 'GEN';
+        $level = 3; // INFO
+
+        // Optional: allow prefix: [TOPIC] ...
+        if (preg_match('/^\\[(?<topic>[A-Z0-9_\\-]+)\\]\\s*(?<rest>.*)$/', $msgStr, $m)) {
+            $topic = strtoupper($m['topic']);
+            $msgStr = $m['rest'];
+        }
+
+        // Rough level inference
+        if (is_string($Data)) {
+            if (str_starts_with($Data, '❌') || stripos($Data, 'error') !== false) {
+                $level = 1; // ERROR
+            } elseif (str_starts_with($Data, '⚠️') || stripos($Data, 'warn') !== false) {
+                $level = 2; // WARN
+            } elseif (
+                str_starts_with($Data, '🔁') || str_starts_with($Data, '📦') ||
+                str_starts_with($Data, '📥') || str_starts_with($Data, '📤')
+            ) {
+                $level = 4; // TRACE
+            }
+        }
+
+        // Filter + throttle
+        $filterMessage = is_string($Message) ? $Message : (string)$Message;
+        if (!$this->DebugFilterMatches($filterMessage, $Data, $topic, $level)) {
+            return false;
+        }
+
+        $thKey = $topic . '|' . $filterMessage . '|' . (is_scalar($Data) ? (string)$Data : json_encode($Data));
+        if (!$this->DebugThrottleAllow($thKey)) {
+            return false;
+        }
+
+        return parent::SendDebug($Message, $Data, $Format);
+    }
+
+    private function SendDebugExtended($Message, $Data, $Format = 0): void
+    {
+        // Wenn Experten-Debug nicht aktiv ist, lasse dein bisheriges Verhalten bestehen.
+        if (!(bool)$this->ReadPropertyBoolean('expert_debug')) {
+            // Falls du hier bislang auf eine Property/Attribute wie extended_debug prüfst, lass das so.
+            parent::SendDebug($Message, $Data, $Format);
+            return;
+        }
+
+        // Experten-Debug: Extended immer als TRACE, Topic EXT
+        $msg = is_string($Message) ? $Message : (string)$Message;
+
+        if (!$this->DebugFilterMatches($msg, $Data, 'EXT', 4)) {
+            return;
+        }
+
+        $thKey = 'EXT|' . $msg . '|' . (is_scalar($Data) ? (string)$Data : json_encode($Data));
+        if (!$this->DebugThrottleAllow($thKey)) {
+            return;
+        }
+
+        parent::SendDebug($Message, $Data, $Format);
     }
 
     /**
@@ -5057,8 +5269,87 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                         'onClick' => 'UCR_DumpClientSessions($id);'
                     ]
                 ]
+            ],
+            [
+                'type' => 'CheckBox',
+                'name' => 'expert_debug',
+                'caption' => '🧪 Experten-Debug'
             ]
         ];
+
+        // Show debug settings only when enabled
+        if ($this->ReadPropertyBoolean('expert_debug')) {
+            $form[] = [
+                'type' => 'ExpansionPanel',
+                'caption' => '🪲 Debugging',
+                'items' => [
+                    [
+                        'type' => 'Label',
+                        'caption' => 'Aktiviere Filter, um Debug-Ausgaben auf bestimmte Entities/IDs/IPs zu reduzieren. Topics z.B.: WS_RX, WS_TX, ENTITY, SENSOR, AUTH.'
+                    ],
+                    [
+                        'type' => 'Select',
+                        'name' => 'debug_level',
+                        'caption' => 'Debug Level',
+                        'options' => [
+                            ['caption' => '0 OFF', 'value' => 0],
+                            ['caption' => '1 ERROR', 'value' => 1],
+                            ['caption' => '2 WARN', 'value' => 2],
+                            ['caption' => '3 INFO', 'value' => 3],
+                            ['caption' => '4 TRACE', 'value' => 4]
+                        ]
+                    ],
+                    [
+                        'type' => 'CheckBox',
+                        'name' => 'debug_filter_enabled',
+                        'caption' => 'Filter aktivieren'
+                    ],
+                    [
+                        'type' => 'ValidationTextBox',
+                        'name' => 'debug_topics',
+                        'caption' => 'Topics (CSV, leer = alle)'
+                    ],
+                    [
+                        'type' => 'ValidationTextBox',
+                        'name' => 'debug_entity_ids',
+                        'caption' => 'Entity IDs (CSV)'
+                    ],
+                    [
+                        'type' => 'ValidationTextBox',
+                        'name' => 'debug_var_ids',
+                        'caption' => 'Var/Object IDs (CSV)'
+                    ],
+                    [
+                        'type' => 'ValidationTextBox',
+                        'name' => 'debug_client_ips',
+                        'caption' => 'Client IPs (CSV)'
+                    ],
+                    [
+                        'type' => 'ValidationTextBox',
+                        'name' => 'debug_text_filter',
+                        'caption' => 'Textfilter (Substring oder Regex)'
+                    ],
+                    [
+                        'type' => 'CheckBox',
+                        'name' => 'debug_text_is_regex',
+                        'caption' => 'Textfilter ist Regex'
+                    ],
+                    [
+                        'type' => 'CheckBox',
+                        'name' => 'debug_strict_match',
+                        'caption' => 'Nur Treffer loggen (strict)'
+                    ],
+                    [
+                        'type' => 'NumberSpinner',
+                        'name' => 'debug_throttle_ms',
+                        'caption' => 'Throttle (ms, 0=aus)',
+                        'minimum' => 0,
+                        'maximum' => 60000
+                    ]
+                ]
+            ];
+        }
+
         return $form;
     }
 

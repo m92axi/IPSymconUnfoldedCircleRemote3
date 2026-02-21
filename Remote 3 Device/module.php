@@ -109,10 +109,19 @@ class Remote3Device extends IPSModuleStrict
 
         if (is_array($activitiesRaw)) {
             foreach (array_values($activitiesRaw) as $index => $activity) {
-                if (isset($activity['entity_id']) && isset($activity['name']['de'])) {
-                    $mapping[$index] = $activity['entity_id'];
-                    IPS_SetVariableProfileAssociation($profileName, $index, $activity['name']['de'], '', -1);
+                if (!isset($activity['entity_id'])) {
+                    continue;
                 }
+
+                $mapping[$index] = (string)$activity['entity_id'];
+
+                // Localized label (supports keys like de, de_de, de-DE, en, en_us, ...)
+                $label = $this->GetLocalizedText($activity['name'] ?? []);
+                if ($label === '') {
+                    $label = (string)$activity['entity_id'];
+                }
+
+                IPS_SetVariableProfileAssociation($profileName, $index, $label, '', -1);
             }
         }
 
@@ -268,9 +277,54 @@ class Remote3Device extends IPSModuleStrict
             return;
         }
 
+        // Normalize language / locale input. Accepts "de", "de_de", "de-DE", "en_US", ...
+        $norm = function (string $s): string {
+            return strtolower(str_replace('-', '_', $s));
+        };
+        $langNorm = $norm($lang);
+        $lang2 = substr($langNorm, 0, 2);
+
         foreach ($activitiesRaw as $activity) {
-            if (($activity['name'][$lang] ?? '') === $activityName) {
-                $activityId = $activity['entity_id'];
+            $nameObj = $activity['name'] ?? [];
+            if (!is_array($nameObj)) {
+                continue;
+            }
+
+            // Build normalized key map -> value
+            $map = [];
+            foreach ($nameObj as $k => $v) {
+                if (is_string($k) && is_string($v)) {
+                    $map[$norm($k)] = $v;
+                }
+            }
+
+            // Try exact match for locale, then language, then language variants (de_*), then English
+            $candidate = $map[$langNorm] ?? '';
+            if ($candidate === '' && isset($map[$lang2])) {
+                $candidate = $map[$lang2];
+            }
+            if ($candidate === '') {
+                foreach ($map as $k => $v) {
+                    if (str_starts_with($k, $lang2 . '_')) {
+                        $candidate = $v;
+                        break;
+                    }
+                }
+            }
+            if ($candidate === '') {
+                foreach ($map as $k => $v) {
+                    if ($k === 'en' || str_starts_with($k, 'en_')) {
+                        $candidate = $v;
+                        break;
+                    }
+                }
+            }
+
+            if ($candidate === $activityName) {
+                $activityId = (string)($activity['entity_id'] ?? '');
+                if ($activityId === '') {
+                    continue;
+                }
                 $this->SendDebug(__FUNCTION__, "➡️ Gefundene ID: $activityId", 0);
                 $this->TriggerActivity($activityId, $state);
                 return;
@@ -737,6 +791,56 @@ class Remote3Device extends IPSModuleStrict
         return 'data:image/png;base64,' . $base64;
     }
 
+    private function GetLocalizedText(array $texts): string
+    {
+        if (empty($texts)) {
+            return '';
+        }
+
+        // keys normalisieren (z.B. de_DE -> de_de)
+        $norm = function (string $s): string {
+            return strtolower(str_replace('-', '_', $s));
+        };
+
+        $locale = $norm(IPS_GetSystemLanguage());      // z.B. de_de
+        $lang = substr($locale, 0, 2);       // z.B. de
+
+        // map der normalisierten keys -> original value
+        $map = [];
+        foreach ($texts as $k => $v) {
+            if (is_string($k) && is_string($v)) {
+                $map[$norm($k)] = $v;
+            }
+        }
+
+        // 1) exakt locale (de_de)
+        if (isset($map[$locale])) {
+            return $map[$locale];
+        }
+
+        // 2) nur Sprache (de)
+        if (isset($map[$lang])) {
+            return $map[$lang];
+        }
+
+        // 3) irgendein de_* (z.B. de_at, de_ch)
+        foreach ($map as $k => $v) {
+            if (str_starts_with($k, $lang . '_')) {
+                return $v;
+            }
+        }
+
+        // 4) Englisch bevorzugen
+        foreach ($map as $k => $v) {
+            if ($k === 'en' || str_starts_with($k, 'en_')) {
+                return $v;
+            }
+        }
+
+        // 5) irgendwas (erstes)
+        return reset($map) ?: '';
+    }
+
     /**
      * build configuration form
      *
@@ -771,8 +875,8 @@ class Remote3Device extends IPSModuleStrict
         if (is_array($activitiesRaw)) {
             foreach ($activitiesRaw as $activity) {
                 $activities[] = [
-                    'name' => $activity['name']['de'] ?? '',
-                    'description' => $activity['description']['de'] ?? '',
+                    'name' => $this->GetLocalizedText($activity['name'] ?? []),
+                    'description' => $this->GetLocalizedText($activity['description'] ?? []),
                     'entity_id' => $activity['entity_id'] ?? '',
                     'state' => $activity['attributes']['state'] ?? '',
                     'enabled' => isset($activity['enabled']) ? ($activity['enabled'] ? 'Yes' : 'No') : ''

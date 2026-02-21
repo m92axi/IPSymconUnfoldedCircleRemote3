@@ -369,6 +369,19 @@ class Remote3CoreManager extends IPSModuleStrict
     {
         //Never delete this line!
         parent::ApplyChanges();
+        // Explicit instance status handling
+        // Default: show "creating" until minimum configuration is present
+        $host = $this->ReadPropertyString('host');
+        $pass = $this->ReadPropertyString('web_config_pass');
+
+        if ($host === '' || $pass === '') {
+            // Not configured yet
+            $this->SetStatus(IS_CREATING);
+        } else {
+            // Config present; mark active for now (we may downgrade later if key creation fails)
+            $this->SetStatus(IS_ACTIVE);
+        }
+
         // Register for status changes of the I/O (WebSocket) instance
         $parentID = IPS_GetInstance($this->InstanceID)['ConnectionID'];
         if ($parentID > 0) {
@@ -386,8 +399,7 @@ class Remote3CoreManager extends IPSModuleStrict
         }
 
         // --- Automatic initial setup when configuration is complete ---
-        $host = $this->ReadPropertyString('host');
-        $pass = $this->ReadPropertyString('web_config_pass');
+        // $host and $pass already read above
 
         if ($host !== '' && $pass !== '') {
             $this->SendDebug(__FUNCTION__, '🚀 Auto setup triggered (host + password present)', 0);
@@ -427,6 +439,8 @@ class Remote3CoreManager extends IPSModuleStrict
                 }
             } else {
                 $this->SendDebug(__FUNCTION__, '❌ API key could not be ensured during auto setup', 0);
+                // We have config, but cannot operate without a valid API key
+                $this->SetStatus(IS_INACTIVE);
             }
         }
 
