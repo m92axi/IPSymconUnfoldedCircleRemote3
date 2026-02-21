@@ -68,7 +68,9 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $this->RegisterPropertyString('sensor_mapping', '[]');
         $this->RegisterPropertyString('ip_whitelist', '[]');
 
+        // Propertys fpr Epert Settings
         $this->RegisterPropertyBoolean('extended_debug', false);
+        $this->RegisterPropertyString('callback_IP', '');
 
         //We need to call the RegisterHook function on Kernel READY
         $this->RegisterMessage(0, IPS_KERNELMESSAGE);
@@ -3989,6 +3991,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
      */
     public function RegisterDriverManually()
     {
+        $this->RefreshRemoteCores();
         $remotes = json_decode($this->ReadAttributeString('remote_cores'), true);
         $token = $this->ReadAttributeString('token');
 
@@ -3998,16 +4001,25 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         }
 
         foreach ($remotes as $remote) {
+            
+            
             $ip = $remote['host'];
             $apiKey = $remote['api_key'];
-
+            
+            // Nach folgender Code macht kein Sinn da $this->InstanceID nicht die ID der Remote-Instanz sonder der Integration Instant ist.
             $hostIdent = @IPS_GetObjectIDByIdent("host", $this->InstanceID);
             $hostValue = is_int($hostIdent) && $hostIdent > 0 ? @GetValue($hostIdent) : '';
             if ($hostValue === false || $hostValue === '') {
                 // Fallback: Host aus der Remote-Instanz verwenden
                 $hostValue = $ip;
             }
+            // Ende Block
 
+            // Symcon Host from Experten Settings imputt
+            $hostValue = $this->ReadPropertyString('callback_IP');
+
+            $this->SendDebugExtended(__FUNCTION__, "🔍 Registriere Treiber bei $ip (Symcon Host: $hostValue)", 0);
+            $this->SendDebugExtended(__FUNCTION__, "📡 API-Key: $apiKey | Token: $token", 0);
             $payload = [
                 'driver_id' => 'symcon-unfoldedcircle',
                 'name' => [
@@ -4043,7 +4055,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                     'header' => [
                         'Content-Type: application/json',
                         'Accept: application/json',
-                        "Authorization: $apiKey"
+                        'Authorization: Bearer ' . $apiKey
                     ],
                     'content' => json_encode($payload)
                 ]
@@ -5055,6 +5067,12 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                         'type' => 'Button',
                         'caption' => '🔧 Manually register driver with Remote 3',
                         'onClick' => 'UCR_RegisterDriverManually($id);'
+                    ],
+                    [
+                        'type' => 'ValidationTextBox',
+                        'name' => 'callback_IP',
+                        'caption' => 'Callback IP (IP of Symcon Server, only needed if automatic DNS name is not working)',
+
                     ]
                 ]
             ]
