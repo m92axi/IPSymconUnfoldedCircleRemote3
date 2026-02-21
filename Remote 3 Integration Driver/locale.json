@@ -42,7 +42,8 @@
             "Switch Variable": "Schaltervariable",
             "Brightness Variable": "Helligkeitsvariable",
             "Color Variable": "Farbvariable",
-            "Color Temperature Variable": "Farbtemperaturvariable"
+            "Color Temperature Variable": "Farbtemperaturvariable",
+            "Callback IP (IP of Symcon Server, only needed if automatic DNS name is not working)": "Callback-IP (IP-Adresse des Symcon-Servers, nur erforderlich, wenn die automatische DNS-Namensauflösung nicht funktioniert)"
         }
     }
 }
