@@ -354,6 +354,8 @@ class Remote3CoreManager extends IPSModuleStrict
         // Timers for automatic initial data refresh
         $this->RegisterTimer('RefreshStep', 0, 'UCR_RefreshStep($_IPS["TARGET"]);');
         $this->RegisterTimer('RefreshAllData', 0, 'UCR_RefreshAllData($_IPS["TARGET"]);');
+        // Timer for automatic WebSocket reconnect handling
+        $this->RegisterTimer('WsReconnectStep', 0, 'UCR_WsReconnectStep($_IPS["TARGET"]);');
     }
 
     public function Destroy(): void
@@ -367,19 +369,37 @@ class Remote3CoreManager extends IPSModuleStrict
     {
         //Never delete this line!
         parent::ApplyChanges();
-        // Register for status changes of the I/O (WebSocket) instance
-        $parentID = IPS_GetInstance($this->InstanceID)['ConnectionID'];
-        if ($parentID > 0) {
-            $this->RegisterMessage($parentID, IM_CHANGESTATUS);
+        // Explicit instance status handling
+        // Default: show "creating" until minimum configuration is present
+        $host = $this->ReadPropertyString('host');
+        $pass = $this->ReadPropertyString('web_config_pass');
+
+        if ($host === '' || $pass === '') {
+            // Not configured yet
+            $this->SetStatus(IS_CREATING);
+        } else {
+            // Config present; mark active for now (we may downgrade later if key creation fails)
+            $this->SetStatus(IS_ACTIVE);
         }
+
+        // Parent monitoring temporarily disabled for stabilization
+        // $parentID = IPS_GetInstance($this->InstanceID)['ConnectionID'];
+        // if ($parentID > 0) {
+        //     $this->RegisterMessage($parentID, IM_CHANGESTATUS);
+        // }
 
         if ($this->GetBuffer('InitialRefreshEnqueued') === '') {
             $this->SetBuffer('InitialRefreshEnqueued', '0');
         }
+        if ($this->GetBuffer('WsReconnectPhase') === '') {
+            $this->SetBuffer('WsReconnectPhase', '0');
+        }
+        if ($this->GetBuffer('WsReconnectAttempts') === '') {
+            $this->SetBuffer('WsReconnectAttempts', '0');
+        }
 
         // --- Automatic initial setup when configuration is complete ---
-        $host = $this->ReadPropertyString('host');
-        $pass = $this->ReadPropertyString('web_config_pass');
+        // $host and $pass already read above
 
         if ($host !== '' && $pass !== '') {
             $this->SendDebug(__FUNCTION__, '🚀 Auto setup triggered (host + password present)', 0);
@@ -388,29 +408,8 @@ class Remote3CoreManager extends IPSModuleStrict
             if ($this->EnsureApiKey()) {
                 $this->SendDebug(__FUNCTION__, '✅ API key ensured', 0);
 
-                // 2) Force parent (WebSocket Client) reconfiguration
-                $parentID = IPS_GetInstance($this->InstanceID)['ConnectionID'];
-                if ($parentID > 0) {
-                    $this->SendDebug(__FUNCTION__, '🔧 Applying changes on WebSocket Client: ' . $parentID, 0);
-                    IPS_ApplyChanges($parentID);
-                }
-
-                // 3) Try to activate WebSocket client
-                if ($parentID > 0) {
-                    $parent = IPS_GetInstance($parentID);
-                    if (!$parent['InstanceStatus']) {
-                        $this->SendDebug(__FUNCTION__, '🔌 Attempting to activate WebSocket Client', 0);
-                        IPS_SetInstanceStatus($parentID, IS_ACTIVE);
-                    }
-                }
-
-                // 4) If WebSocket already active, trigger subscriptions + refresh
-                $parentID = IPS_GetInstance($this->InstanceID)['ConnectionID'];
-                if ($parentID > 0 && IPS_GetInstance($parentID)['InstanceStatus'] === IS_ACTIVE) {
-                    $this->SendDebug(__FUNCTION__, '📡 WebSocket active – subscribing and refreshing', 0);
-                    $this->SubscribeToAllEvents();
-                    $this->StartInitialRefresh(true);
-                }
+                // Parent WebSocket manipulation temporarily disabled for stabilization
+                // No automatic ApplyChanges, activation, subscription or refresh here
 
                 // 5) Try icon upload once
                 if (!$this->ReadAttributeBoolean('icon_uploaded')) {
@@ -419,6 +418,8 @@ class Remote3CoreManager extends IPSModuleStrict
                 }
             } else {
                 $this->SendDebug(__FUNCTION__, '❌ API key could not be ensured during auto setup', 0);
+                // Keep instance active (config is present). WS parent may still be connected; we will retry later.
+                $this->SetStatus(IS_ACTIVE);
             }
         }
 
@@ -919,18 +920,9 @@ class Remote3CoreManager extends IPSModuleStrict
         //Never delete this line!
         parent::MessageSink($TimeStamp, $SenderID, $Message, $Data);
 
+        // Parent status handling temporarily disabled
         if ($Message === IM_CHANGESTATUS) {
-            $this->SendDebug(__FUNCTION__, "📡 WebSocket Statusänderung von ID $SenderID: Status $Data[0]", 0);
-            // Nur bei aktivem Zustand neu abonnieren
-            if ($Data[0] === IS_ACTIVE) {
-                $this->SendDebug(__FUNCTION__, '🔄 WebSocket verbunden, automatische Event-Registrierung...', 0);
-                $this->SubscribeToAllEvents();
-                // Trigger initial data refresh once the WebSocket connection becomes active
-                $this->StartInitialRefresh(false);
-            } else {
-                // Reset flag so next successful connect can enqueue refresh again
-                $this->SetBuffer('InitialRefreshEnqueued', '0');
-            }
+            return;
         }
 
         if ($Message == IPS_KERNELMESSAGE && $Data[0] == KR_READY) {
@@ -1162,11 +1154,114 @@ class Remote3CoreManager extends IPSModuleStrict
         return $this->CeckResponse($response);
     }
 
+    /**
+     * Universal REST call helper for development and scripting.
+     *
+     * This allows calling arbitrary Core REST endpoints from scripts without exposing all protected methods.
+     *
+     * Examples:
+     *  echo UCR_CallApi($id, 'GET', '/activities?page=1&limit=50');
+     *  echo UCR_CallApi($id, 'PUT', '/entities/my_entity/command', '{"entity_id":"my_entity","cmd_id":"power_toggle"}');
+     */
+    public function CallApi(string $method, string $endpoint, $params = null): string
+    {
+        $this->SendDebug(__FUNCTION__, 'method=' . $method . ' endpoint=' . $endpoint, 0);
+
+        // Allow params to be passed either as array or as JSON string
+        $payload = [];
+        if (is_string($params) && trim($params) !== '') {
+            $decoded = json_decode($params, true);
+            if (is_array($decoded)) {
+                $payload = $decoded;
+            } else {
+                // Keep raw string in debug, but do not fail hard
+                $this->SendDebug(__FUNCTION__, '⚠️ params JSON could not be decoded, ignoring params', 0);
+            }
+        } elseif (is_array($params)) {
+            $payload = $params;
+        }
+
+        $response = $this->SendRestRequest($method, $endpoint, $payload);
+        return $this->CeckResponse($response);
+    }
+
+    // === REST API Command Methods ===
+
     protected function CallGetActivities()
     {
-        $this->SendDebug(__FUNCTION__, '⏳ Requesting /activities...', 0);
-        $response = $this->SendRestRequest('GET', '/activities');
-        return $this->CeckResponse($response);
+        $this->SendDebug(__FUNCTION__, '⏳ Requesting /activities (paginated)...', 0);
+
+        $limit = 50;
+        $page = 1;
+        $all = [];
+        $seen = [];
+
+        // Hard safety cap to avoid infinite loops if the API behaves unexpectedly
+        $maxPages = 100;
+
+        while ($page <= $maxPages) {
+            $endpoint = '/activities?page=' . $page . '&limit=' . $limit;
+            $this->SendDebug(__FUNCTION__, '➡️ Page ' . $page . ' GET ' . $endpoint, 0);
+
+            $response = $this->SendRestRequest('GET', $endpoint);
+
+            if (!is_array($response)) {
+                $this->SendDebug(__FUNCTION__, '❌ Invalid response (not an array) on page ' . $page, 0);
+                // Return error structure through CeckResponse
+                return $this->CeckResponse($response);
+            }
+
+            // The API may return either:
+            // - { results: [...] }
+            // - { items: [...] }
+            // - { data: [...] }
+            // - [...] (direct array)
+            $items = [];
+            if (isset($response['results']) && is_array($response['results'])) {
+                $items = $response['results'];
+            } elseif (isset($response['items']) && is_array($response['items'])) {
+                $items = $response['items'];
+            } elseif (isset($response['data']) && is_array($response['data'])) {
+                $items = $response['data'];
+            } elseif (array_is_list($response)) {
+                $items = $response;
+            }
+
+            $count = is_array($items) ? count($items) : 0;
+            $this->SendDebug(__FUNCTION__, '⬅️ Page ' . $page . ' items=' . $count, 0);
+
+            if ($count === 0) {
+                break;
+            }
+
+            // De-duplicate by activity id if present, otherwise by JSON hash
+            foreach ($items as $a) {
+                if (is_array($a) && isset($a['activity_id'])) {
+                    $key = 'id:' . (string)$a['activity_id'];
+                } elseif (is_array($a) && isset($a['id'])) {
+                    $key = 'id:' . (string)$a['id'];
+                } else {
+                    $key = 'hash:' . md5(json_encode($a));
+                }
+
+                if (!isset($seen[$key])) {
+                    $seen[$key] = true;
+                    $all[] = $a;
+                }
+            }
+
+            // If fewer than limit came back, assume this is the last page
+            if ($count < $limit) {
+                break;
+            }
+
+            $page++;
+        }
+
+        $this->SendDebug(__FUNCTION__, '✅ Total activities collected: ' . count($all), 0);
+
+        // Return a single combined structure, keeping backward compatibility by using `results`
+        return $this->CeckResponse(['results' => $all]);
     }
 
     protected function CallSendEntityCommand($params)
@@ -1224,6 +1319,107 @@ class Remote3CoreManager extends IPSModuleStrict
         $this->SendDebug(__FUNCTION__, '⏳ Requesting /intg...', 0);
         $response = $this->SendRestRequest('GET', '/entities');
         return $this->CeckResponse($response);
+    }
+
+    /**
+     * Start (or continue) an automatic reconnect cycle for the WebSocket Client parent.
+     * This is a best-effort self-heal when the I/O gets stuck after Remote standby.
+     */
+    private function StartWsReconnect(string $reason): void
+    {
+        $parentID = IPS_GetInstance($this->InstanceID)['ConnectionID'];
+        if ($parentID <= 0) {
+            $this->SendDebug(__FUNCTION__, '⛔ No parent I/O instance available for reconnect.', 0);
+            return;
+        }
+
+        // Avoid starting multiple cycles in parallel
+        $phase = (int)($this->GetBuffer('WsReconnectPhase') !== '' ? $this->GetBuffer('WsReconnectPhase') : '0');
+        if ($phase !== 0) {
+            $this->SendDebug(__FUNCTION__, '⏳ Reconnect already running (phase=' . $phase . ')', 0);
+            return;
+        }
+
+        $attempts = (int)($this->GetBuffer('WsReconnectAttempts') !== '' ? $this->GetBuffer('WsReconnectAttempts') : '0');
+        $attempts++;
+        $this->SetBuffer('WsReconnectAttempts', (string)$attempts);
+        $this->SetBuffer('WsReconnectPhase', '1');
+
+        $this->SendDebug(__FUNCTION__, '🧯 Starting WS reconnect cycle (attempt ' . $attempts . '): ' . $reason, 0);
+
+        // Phase 1 will disable the parent, Phase 2 will re-enable it.
+        $this->SetTimerInterval('WsReconnectStep', 250);
+    }
+
+    /**
+     * Timer handler for reconnect cycle.
+     * Phase 1: set parent inactive
+     * Phase 2: apply changes + set parent active
+     * Phase 3: verify, otherwise retry with backoff
+     */
+    public function WsReconnectStep(): void
+    {
+        $parentID = IPS_GetInstance($this->InstanceID)['ConnectionID'];
+        if ($parentID <= 0) {
+            $this->SetTimerInterval('WsReconnectStep', 0);
+            $this->SetBuffer('WsReconnectPhase', '0');
+            return;
+        }
+
+        $phase = (int)($this->GetBuffer('WsReconnectPhase') !== '' ? $this->GetBuffer('WsReconnectPhase') : '0');
+        $attempts = (int)($this->GetBuffer('WsReconnectAttempts') !== '' ? $this->GetBuffer('WsReconnectAttempts') : '0');
+
+        if ($phase === 1) {
+            $this->SendDebug(__FUNCTION__, '🔌 Phase 1: disabling WebSocket Client ' . $parentID, 0);
+            @IPS_SetInstanceStatus($parentID, IS_INACTIVE);
+            $this->SetBuffer('WsReconnectPhase', '2');
+            $this->SetTimerInterval('WsReconnectStep', 600);
+            return;
+        }
+
+        if ($phase === 2) {
+            $this->SendDebug(__FUNCTION__, '🔧 Phase 2: applying + enabling WebSocket Client ' . $parentID, 0);
+            @IPS_ApplyChanges($parentID);
+            @IPS_SetInstanceStatus($parentID, IS_ACTIVE);
+            $this->SetBuffer('WsReconnectPhase', '3');
+            $this->SetTimerInterval('WsReconnectStep', 1500);
+            return;
+        }
+
+        if ($phase === 3) {
+            $status = IPS_GetInstance($parentID)['InstanceStatus'];
+            $this->SendDebug(__FUNCTION__, '🔍 Phase 3: parent status=' . $status, 0);
+
+            if ($status === IS_ACTIVE) {
+                $this->SendDebug(__FUNCTION__, '✅ Reconnect successful.', 0);
+                $this->SetTimerInterval('WsReconnectStep', 0);
+                $this->SetBuffer('WsReconnectPhase', '0');
+                $this->SetBuffer('WsReconnectAttempts', '0');
+
+                // After a successful reconnect, subscribe + refresh
+                $this->SubscribeToAllEvents();
+                $this->StartInitialRefresh(true);
+                return;
+            }
+
+            // Retry with backoff (max 3 attempts)
+            if ($attempts >= 3) {
+                $this->SendDebug(__FUNCTION__, '❌ Reconnect failed after ' . $attempts . ' attempts. Giving up.', 0);
+                $this->SetTimerInterval('WsReconnectStep', 0);
+                $this->SetBuffer('WsReconnectPhase', '0');
+                return;
+            }
+
+            $this->SendDebug(__FUNCTION__, '⏳ Reconnect not yet active, will retry. attempt=' . $attempts, 0);
+            $this->SetBuffer('WsReconnectPhase', '1');
+            // backoff 5 seconds
+            $this->SetTimerInterval('WsReconnectStep', 5000);
+            return;
+        }
+
+        // Not running
+        $this->SetTimerInterval('WsReconnectStep', 0);
+        $this->SetBuffer('WsReconnectPhase', '0');
     }
 
 
@@ -1607,3 +1803,4 @@ class Remote3CoreManager extends IPSModuleStrict
         return $form;
     }
 }
+
