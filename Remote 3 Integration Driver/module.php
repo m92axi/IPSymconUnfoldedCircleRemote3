@@ -112,7 +112,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
     {
         //Never delete this line!
         parent::ApplyChanges();
-        $this->SendDebugExtended(__FUNCTION__, '⚙️ ApplyChanges() aufgerufen', 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_EXT, '⚙️ ApplyChanges() called', 0);
         //Only call this in READY state. On startup the WebHook instance might not be available yet
         if (IPS_GetKernelRunlevel() == KR_READY) {
             $this->RegisterHook('/hook/unfoldedcircle');
@@ -242,7 +242,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         }
 
         $this->WriteAttributeString('vm_update_vars', json_encode($newIds));
-        $this->SendDebug(__FUNCTION__, '📣 VM_UPDATE synced for ' . count($newIds) . ' variables', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_VM, '📣 VM_UPDATE synced for ' . count($newIds) . ' variables', 0);
     }
 
     /**
@@ -258,7 +258,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
         $token = bin2hex(random_bytes(16)); // 32 characters hex string
         $this->WriteAttributeString('token', $token);
-        $this->SendDebug(__FUNCTION__, '🔑 Initial token generated: ' . $token, 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_AUTH, '🔑 Initial token generated: ' . $token, 0);
 
         // If the configuration form is open, reflect the value immediately.
         $this->UpdateFormField('token', 'value', $token);
@@ -275,13 +275,13 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             "SilenceErrors" => false
         ];
 
-        $this->SendDebug(__FUNCTION__, '🧩 WS Konfiguration: ' . json_encode($Config), 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, '🧩 WS configuration: ' . json_encode($Config), 0);
         return json_encode($Config);
     }
 
     public function PingDeviceState(): void
     {
-        $this->SendDebugExtended(__FUNCTION__, '🔄 Timer-Methode wurde aufgerufen', 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_DEVICE, '🔄 PingDeviceState timer triggered', 0);
         $sessions = $this->getAllClientSessions();
         $whitelist = array_map('trim', array_column(json_decode($this->ReadPropertyString('ip_whitelist'), true), 'ip'));
 
@@ -291,10 +291,10 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             $hasPort = !empty($entry['port']);
 
             if (($isAuthenticated || $isWhitelisted) && $hasPort) {
-                $this->SendDebugExtended(__FUNCTION__, "🔁 Status-Ping an $ip:{$entry['port']} (auth: " . ($isAuthenticated ? '✅' : '❌') . ", whitelist: " . ($isWhitelisted ? '✅' : '❌') . ")", 0);
+                $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_DEVICE, "🔁 Sending device_state ping to $ip:{$entry['port']} (auth: " . ($isAuthenticated ? '✅' : '❌') . ", whitelist: " . ($isWhitelisted ? '✅' : '❌') . ")", 0);
                 $this->SendDeviceState('CONNECTED', $ip, (int)$entry['port']);
             } else {
-                $this->SendDebugExtended(__FUNCTION__, "⏭️ Ping übersprungen für $ip (auth: " . ($isAuthenticated ? '✅' : '❌') . ", whitelist: " . ($isWhitelisted ? '✅' : '❌') . ", port: " . ($entry['port'] ?? '—') . ")", 0);
+                $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_DEVICE, "⏭️ Ping skipped for $ip (auth: " . ($isAuthenticated ? '✅' : '❌') . ", whitelist: " . ($isWhitelisted ? '✅' : '❌') . ", port: " . ($entry['port'] ?? '—') . ")", 0);
             }
         }
     }
@@ -488,7 +488,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                             $key = $feature['feature_key'] ?? null;
 
                             if ($varId <= 0 || !$key || !@IPS_VariableExists($varId)) {
-                                // $this->SendDebug(__FUNCTION__, "⚠️ Überspringe ungültiges Feature: " . json_encode($feature), 0);
+                                // $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠️ Überspringe ungültiges Feature: " . json_encode($entry), 0);
                                 continue;
                             }
 
@@ -593,13 +593,13 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
     public function ForwardData(string $JSONString): string
     {
-        $this->SendDebug(__FUNCTION__, '📥 Eingehende Daten: ' . $JSONString, 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_API, '📥 Incoming data: ' . $JSONString, 0);
 
         $data = json_decode($JSONString, true);
 
         // Prüfen, ob ein Buffer existiert
         if (!isset($data['Buffer'])) {
-            $this->SendDebug(__FUNCTION__, '❌ Fehler: Buffer fehlt!', 0);
+            $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_API, '❌ Error: Buffer missing!', 0);
             return json_encode(['error' => 'Buffer fehlt']);
         }
 
@@ -607,18 +607,18 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
         // Prüfen, ob "method" vorhanden ist
         if (!isset($buffer['method'])) {
-            $this->SendDebug(__FUNCTION__, '❌ Fehler: Buffer enthält kein "method"-Feld!', 0);
+            $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_API, '❌ Error: Buffer does not contain a "method" field!', 0);
             return json_encode(['error' => 'method fehlt im Buffer']);
         }
 
         $method = $buffer['method'];
-        $this->SendDebug(__FUNCTION__, "➡️ Verarbeite Methode: $method", 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_API, "➡️ Processing method: $method", 0);
 
         switch ($method) {
             case 'CallGetVersion':
                 // return $this->CallGetVersion();
             default:
-                $this->SendDebug(__FUNCTION__, "⚠️ Unbekannte Methode: $method", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_API, "⚠️ Unknown method: $method", 0);
                 return json_encode(['error' => 'Unbekannter Fehler']);
         }
     }
@@ -644,8 +644,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             $isHex = true;
         }
 
-        // $this->SendDebugExtended(__FUNCTION__, sprintf('📤 SendDataWebsocket → %s buffer to %s:%d (len=%d)', $isHex ? 'HEX' : 'TEXT', $ClientIP, $ClientPort, strlen($sendBuffer)), 0);
-        $this->SendDebug(__FUNCTION__, sprintf('📤 SendDataWebsocket → %s buffer to %s:%d (len=%d)', $isHex ? 'HEX' : 'TEXT', $ClientIP, $ClientPort, strlen($sendBuffer)), 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, sprintf('📤 SendDataWebsocket → %s buffer to %s:%d (len=%d)', $isHex ? 'HEX' : 'TEXT', $ClientIP, $ClientPort, strlen($sendBuffer)), 0);
 
 
         $this->SendDataToParent(json_encode([
@@ -895,10 +894,10 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 'params' => $params,
                 'full_msg' => $fullMessage
             ];
-            $this->SendDebug(__FUNCTION__, "🆕 Neuer Befehl geloggt: $key", 0);
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_ENTITY, "🆕 Neuer Befehl geloggt: $key", 0);
             $this->WriteAttributeString('log_commands', json_encode($logged));
         } else {
-            $this->SendDebug(__FUNCTION__, "ℹ️ Bereits geloggt: $key", 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "ℹ️ Bereits geloggt: $key", 0);
         }
     }
 
@@ -919,22 +918,22 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         if (!in_array($msg, $loggedEvents)) {
             $loggedEvents[] = $msg;
             $this->WriteAttributeString('events', json_encode($loggedEvents));
-            $this->SendDebug(__FUNCTION__, "📝 Neuer Event-Typ geloggt: $msg", 0);
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_ENTITY, "📝 Neuer Event-Typ geloggt: $msg", 0);
         }
         // --- END log unique event types ---
-        $this->SendDebug(__FUNCTION__, "📩 Empfangener Event: $msg von $ip:$port", 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_ENTITY, "📩 Empfangener Event: $msg von $ip:$port", 0);
         $instanceID = $this->FindDeviceInstanceByIp('{5894A8B3-7E60-981A-B3BA-6647335B57E4}', 'host', $ip);
 
         switch ($msg) {
             case 'enter_standby':
-                $this->SendDebug(__FUNCTION__, "🛌 Remote $ip ist in Standby gegangen", 0);
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_ENTITY, "🛌 Remote $ip ist in Standby gegangen", 0);
                 if ($instanceID > 0) {
                     UCR_ReceiveDriverEvent($instanceID, $json);
                 }
                 break;
 
             case 'connect':
-                $this->SendDebug(__FUNCTION__, "🔌 Remote $ip ist wieder aktiv → sende CONNECTED", 0);
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_ENTITY, "🔌 Remote $ip ist wieder aktiv → sende CONNECTED", 0);
                 $this->SendDeviceState('CONNECTED', $ip, $port);
                 $this->UpdateAllEntityStates();
                 if ($instanceID > 0) {
@@ -943,14 +942,14 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 break;
 
             case 'button_pressed':
-                $this->SendDebug(__FUNCTION__, "🟢 Button gedrückt (noch nicht ausgewertet)", 0);
+                $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "🟢 Button gedrückt (noch nicht ausgewertet)", 0);
                 if ($instanceID > 0) {
                     UCR_ReceiveDriverEvent($instanceID, $json);
                 }
                 break;
 
             default:
-                $this->SendDebug(__FUNCTION__, "⚠️ Unbekannter Event-Typ: $msg", 0);
+                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠️ Unbekannter Event-Typ: $msg", 0);
                 break;
         }
     }
@@ -1022,13 +1021,13 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         ]);
 
         $url = 'http://127.0.0.1:3777/hook/unfoldedcircle';
-        $this->SendDebug(__FUNCTION__, '🌐 Sende Fallback-Request an Webhook: ' . $url, 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_HOOK, '🌐 Sending fallback request to webhook: ' . $url, 0);
         $result = @file_get_contents($url, false, $context);
 
         if ($result === false) {
-            $this->SendDebug(__FUNCTION__, '❌ Fehler bei Weiterleitung – keine Antwort vom Webhook', 0);
+            $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_HOOK, '❌ Forwarding failed – no response from webhook', 0);
         } else {
-            $this->SendDebug(__FUNCTION__, '✅ Antwort vom Webhook: ' . $result, 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_HOOK, '✅ Webhook response: ' . $result, 0);
         }
     }
 
@@ -1048,7 +1047,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         }
 
         if (!preg_match('/Sec-WebSocket-Key: (.*)/i', $payload, $matches)) {
-            $this->SendDebug(__FUNCTION__, "❌ Kein gültiger Sec-WebSocket-Key gefunden", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_WS, '❌ No valid Sec-WebSocket-Key found', 0);
             return false;
         }
 
@@ -1062,7 +1061,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $upgradeResponse .= "Connection: Upgrade\r\n";
         $upgradeResponse .= "Sec-WebSocket-Accept: $accept\r\n\r\n";
 
-        $this->SendDebug(__FUNCTION__, "🔁 Sende WebSocket-Handshake-Antwort an $clientIP:$clientPort", 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_WS, "🔁 Sending WebSocket handshake response to $clientIP:$clientPort", 0);
         $this->PushRawToRemoteClient($upgradeResponse, $clientIP, $clientPort);
         IPS_Sleep(50); // Mini-Delay für Stabilität
 
@@ -1074,7 +1073,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             'msg' => 'authentication',
             'msg_data' => new stdClass()
         ];
-        $this->SendDebug(__FUNCTION__, "🔁 Sende Authentication-Antwort an $clientIP:$clientPort", 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_AUTH, "🔁 Sending authentication response to $clientIP:$clientPort", 0);
         $this->PushToRemoteClient($authMessage, $clientIP, $clientPort);
 
         // Optional (kann auch später durch Anfrage erfolgen)
@@ -1085,7 +1084,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
     public function SetUseComplexSetup(bool $enabled): void
     {
         $this->WriteAttributeBoolean('use_complex_setup', $enabled);
-        $this->SendDebug(__FUNCTION__, '🧩 Setup-Flow gesetzt: ' . ($enabled ? 'COMPLEX' : 'SIMPLE'), 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_FORM, '🧩 Setup flow set: ' . ($enabled ? 'COMPLEX' : 'SIMPLE'), 0);
     }
 
     public function GetUseComplexSetup(): bool
@@ -1096,7 +1095,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
     private function HandleSetDriverUserData(array $json, int $reqId, string $clientIP, int $clientPort): void
     {
         $useComplex = (bool)$this->ReadAttributeBoolean('use_complex_setup');
-        $this->SendDebug(__FUNCTION__, '🧩 Dispatch Setup-Flow: ' . ($useComplex ? 'COMPLEX' : 'SIMPLE'), 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_FORM, '🧩 Dispatch setup flow: ' . ($useComplex ? 'COMPLEX' : 'SIMPLE'), 0);
 
         if ($useComplex) {
             $this->HandleSetDriverUserData_Complex($json, $reqId, $clientIP, $clientPort);
@@ -1197,7 +1196,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
     private function HandleSetDriverUserData_Simple(array $json, int $reqId, string $clientIP, int $clientPort): void
     {
-        $this->SendDebug(__FUNCTION__, '📥 Setup-Daten vom Benutzer empfangen (vereinfachter Flow)', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_FORM, '📥 Setup-Daten vom Benutzer empfangen (vereinfachter Flow)', 0);
 
         $confirmation = [
             'kind' => 'resp',
@@ -1213,31 +1212,29 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $this->PushToRemoteClient($confirmation, $clientIP, $clientPort);
     }
 
-    /**
-     * Handles the 'set_driver_user_data' message for setup flow.
-     */
     private function HandleSetDriverUserData_Complex(array $json, int $reqId, string $clientIP, int $clientPort): void
     {
-        $this->SendDebug(__FUNCTION__, '📥 Setup-Daten vom Benutzer empfangen', 0);
-        // Enhanced debug output: log full msg_data and keys/values of input_values
-        $this->SendDebug(__FUNCTION__, '📨 Vollständiger msg_data: ' . json_encode($json['msg_data'], JSON_PRETTY_PRINT), 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_FORM, '📥 Setup-Daten vom Benutzer empfangen', 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_FORM, '📨 Vollständiger msg_data: ' . json_encode($json['msg_data'], JSON_PRETTY_PRINT), 0);
+
         $inputValues = $json['msg_data']['input_values'] ?? [];
+
         if (!empty($inputValues)) {
             foreach ($inputValues as $key => $value) {
-                $this->SendDebug(__FUNCTION__, "🔑 Eingabe: $key => $value", 0);
+                $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_FORM, "🔑 Eingabe: $key => $value", 0);
             }
         } else {
-            $this->SendDebug(__FUNCTION__, '⚠️ Keine input_values enthalten', 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_FORM, '⚠️ Keine input_values enthalten', 0);
         }
-        $this->SendDebug(__FUNCTION__, '📊 input_values: ' . json_encode($inputValues), 0);
 
-        // STEP 1: Confirmation (replaces step1.choice, explanation-only screen)
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_FORM, '📊 input_values: ' . json_encode($inputValues), 0);
+
+        // STEP 1: Confirmation
         if (isset($inputValues['step1.confirmation'])) {
-            $this->SendDebug(__FUNCTION__, '➡️ Schritt 1: Einleitung bestätigt', 0);
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_FORM, '➡️ Schritt 1: Einleitung bestätigt', 0);
 
             $token = $this->ReadAttributeString('token');
             if (empty($token)) {
-                // Generate new token if not set (assume method exists)
                 $this->GenerateToken();
                 $token = $this->ReadAttributeString('token');
             }
@@ -1272,13 +1269,14 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             ];
             $this->PushToRemoteClient($nextStep, $clientIP, $clientPort);
 
-            // STEP 2: Token entry and validation
         } elseif (isset($inputValues['step2.token'])) {
+
             $tokenUser = $inputValues['step2.token'];
             $tokenStored = $this->ReadAttributeString('token');
 
             if ($tokenUser !== $tokenStored) {
-                $this->SendDebug(__FUNCTION__, "❌ Ungültiger Token: $tokenUser", 0);
+                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_FORM, "❌ Ungültiger Token: $tokenUser", 0);
+
                 $retryStep = [
                     'kind' => 'resp',
                     'req_id' => $reqId,
@@ -1311,7 +1309,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 return;
             }
 
-            $this->SendDebug(__FUNCTION__, "✅ Gültiger Token bestätigt", 0);
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_FORM, "✅ Gültiger Token bestätigt", 0);
 
             $confirmationStep = [
                 'kind' => 'resp',
@@ -1346,10 +1344,10 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             ];
             $this->PushToRemoteClient($confirmationStep, $clientIP, $clientPort);
 
-            // STEP 3: (future) device selection, currently just finish
         } elseif (isset($inputValues['step3.device_selection']) || isset($inputValues['step3.ready'])) {
-            // Placeholder: Setup complete
-            $this->SendDebug(__FUNCTION__, "✅ Geräteauswahl abgeschlossen", 0);
+
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_FORM, "✅ Geräteauswahl abgeschlossen", 0);
+
             $nextStep = [
                 'kind' => 'resp',
                 'req_id' => $reqId,
@@ -1364,7 +1362,8 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             $this->PushToRemoteClient($nextStep, $clientIP, $clientPort);
 
         } else {
-            $this->SendDebug(__FUNCTION__, '⚠️ Unbekannte oder fehlende Eingabewerte', 0);
+
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_FORM, '⚠️ Unbekannte oder fehlende Eingabewerte', 0);
             $this->SendResultOK($reqId, $clientIP, $clientPort);
         }
     }
@@ -1560,7 +1559,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
     private function SendEntityStates(string $clientIP, int $clientPort, int $reqId): void
     {
-        $this->SendDebug(__FUNCTION__, "▶️ Starte SendEntityStates", 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_IO, "▶️ Starte SendEntityStates", 0);
         $entities = [];
         // Switches
         $switchMapping = json_decode($this->ReadPropertyString('switch_mapping'), true);
@@ -1645,19 +1644,19 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         // Climates
         $climateMapping = json_decode($this->ReadPropertyString('climate_mapping'), true);
         if (is_array($climateMapping)) {
-            $this->SendDebug(__FUNCTION__, "🔍 Verarbeite Climate-Mapping...", 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_IO, "🔍 Verarbeite Climate-Mapping...", 0);
             foreach ($climateMapping as $entry) {
                 // Robustere Prüfung und ausführliche Debug-Ausgaben
                 if (!isset($entry['instance_id'])) {
-                    $this->SendDebug(__FUNCTION__, "⚠️ Eintrag ohne instance_id übersprungen: " . json_encode($entry), 0);
+                    $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_IO, "⚠️ Eintrag ohne instance_id übersprungen: " . json_encode($entry), 0);
                     continue;
                 }
 
                 try {
-                    $this->SendDebug(__FUNCTION__, "➡️ Climate-Instanz: " . $entry['instance_id'], 0);
+                    $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_IO, "➡️ Climate-Instanz: " . $entry['instance_id'], 0);
 
                     if (!isset($entry['status_var_id']) || !is_numeric($entry['status_var_id'])) {
-                        $this->SendDebug(__FUNCTION__, "⚠️ Kein status_var_id für climate_" . $entry['instance_id'], 0);
+                        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_IO, "⚠️ Kein status_var_id für climate_" . $entry['instance_id'], 0);
                         continue;
                     }
 
@@ -1668,7 +1667,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                         $value = GetValue($entry['mode_var_id']);
                         $label = $this->GetProfileValueLabel($entry['mode_var_id'], $value);
                         $allowedStates = ['HEAT', 'COOL', 'HEAT_COOL', 'FAN', 'AUTO', 'OFF'];
-                        $this->SendDebug(__FUNCTION__, "🌡️ Modus-Wert ($value) → Label: $label", 0);
+                        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_IO, "🌡️ Modus-Wert ($value) → Label: $label", 0);
                         if (in_array($label, $allowedStates)) {
                             $state = $label;
                         }
@@ -1694,7 +1693,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                         'attributes' => $attributes
                     ];
                 } catch (Throwable $e) {
-                    $this->SendDebug(__FUNCTION__, "❌ Fehler bei Climate-Instanz {$entry['instance_id']}: " . $e->getMessage(), 0);
+                    $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_IO, "❌ Fehler bei Climate-Instanz {$entry['instance_id']}: " . $e->getMessage(), 0);
                     continue;
                 }
             }
@@ -1703,10 +1702,10 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         // Media Player
         $mediaMapping = json_decode($this->ReadPropertyString('media_player_mapping'), true);
         if (is_array($mediaMapping)) {
-            $this->SendDebug(__FUNCTION__, "🔍 Verarbeite Media Player-Mapping...", 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_IO, "🔍 Verarbeite Media Player-Mapping...", 0);
             foreach ($mediaMapping as $entry) {
                 if (!isset($entry['instance_id']) || !isset($entry['name']) || !isset($entry['features']) || !is_array($entry['features'])) {
-                    $this->SendDebug(__FUNCTION__, "⚠️ Ungültiger Eintrag im Media Mapping übersprungen: " . json_encode($entry), 0);
+                    $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_IO, "⚠️ Ungültiger Eintrag im Media Mapping übersprungen: " . json_encode($entry), 0);
                     continue;
                 }
 
@@ -1969,16 +1968,16 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         // Encode message to JSON
         $json = json_encode($data, JSON_UNESCAPED_SLASHES);
         if ($json === false) {
-            $this->SendDebug(__FUNCTION__, '❌ JSON Encoding Error (message): ' . json_last_error_msg(), 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_IO, '❌ JSON Encoding Error (message): ' . json_last_error_msg(), 0);
             return;
         }
 
-        $this->SendDebug(__FUNCTION__, '📤 Response to ' . $clientIP . ': ' . $json, 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_IO, '📤 Response to ' . $clientIP . ': ' . $json, 0);
 
         // Pack into a WebSocket frame (binary)
         $packed = WebSocketUtils::PackData($json);
         $packedHex = bin2hex($packed);
-        $this->SendDebug(__FUNCTION__, '📤 Packed Data (hex): ' . $packedHex, 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_IO, '📤 Packed Data (hex): ' . $packedHex, 0);
 
         // IMPORTANT: Never put binary into JSON. Send HEX and let the parent (Server Socket) convert back to binary.
         $sendPayload = [
@@ -1991,11 +1990,11 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
         $jsonPayload = json_encode($sendPayload, JSON_UNESCAPED_SLASHES);
         if ($jsonPayload === false) {
-            $this->SendDebug(__FUNCTION__, '❌ JSON Encoding Error (envelope): ' . json_last_error_msg(), 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_IO, '❌ JSON Encoding Error (envelope): ' . json_last_error_msg(), 0);
             return;
         }
 
-        $this->SendDebug(__FUNCTION__, '📤 Final JSON Payload: ' . $jsonPayload, 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_IO, '📤 Final JSON Payload: ' . $jsonPayload, 0);
         $this->SendDataToParent($jsonPayload);
     }
 
@@ -2024,11 +2023,11 @@ class Remote3IntegrationDriver extends IPSModuleStrict
     private function PushRawToRemoteClient(string $data, string $clientIP, int $clientPort): void
     {
         // IMPORTANT: Never put binary / raw frame bytes into JSON. Always send HEX and let the parent (Server Socket) convert back to binary.
-        $this->SendDebug(__FUNCTION__, '📤 Raw response (string) to ' . $clientIP . ': ' . $data, 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_IO, '📤 Raw response (string) to ' . $clientIP . ': ' . $data, 0);
 
         // Convert to bytes as-is and send HEX
         $hex = bin2hex($data);
-        $this->SendDebug(__FUNCTION__, '📤 Raw response (hex,len=' . strlen($hex) . '): ' . $hex, 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_IO, '📤 Raw response (hex,len=' . strlen($hex) . '): ' . $hex, 0);
 
         $payload = [
             'DataID' => '{C8792760-65CF-4C53-B5C7-A30FCC84FEFE}', // Server Socket
@@ -2040,11 +2039,11 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
         $json = json_encode($payload, JSON_UNESCAPED_SLASHES);
         if ($json === false) {
-            $this->SendDebug(__FUNCTION__, '❌ JSON Encoding Error (raw envelope): ' . json_last_error_msg(), 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_IO, '❌ JSON Encoding Error (raw envelope): ' . json_last_error_msg(), 0);
             return;
         }
 
-        $this->SendDebug(__FUNCTION__, '📤 Raw envelope to Server Socket: ' . $json, 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_IO, '📤 Raw envelope to Server Socket: ' . $json, 0);
         $this->SendDataToParent($json);
     }
 
@@ -2064,12 +2063,12 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         ], JSON_UNESCAPED_SLASHES);
 
         if ($payload === false) {
-            $this->SendDebug(__FUNCTION__, '❌ JSON Encoding Error (pong envelope): ' . json_last_error_msg(), 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_IO, '❌ JSON Encoding Error (pong envelope): ' . json_last_error_msg(), 0);
             return;
         }
 
-        $this->SendDebug(__FUNCTION__, '📤 PONG (hex,len=' . strlen($hex) . '): ' . $hex, 0);
-        $this->SendDebugExtended(__FUNCTION__, "PONG", 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_IO, '📤 PONG (hex,len=' . strlen($hex) . '): ' . $hex, 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_IO, 'PONG', 0);
         $this->SendDataToParent($payload);
     }
 
@@ -2105,11 +2104,11 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
     private function RegisterMdnsService()
     {
-        $this->SendDebug(__FUNCTION__, '🔧 DNS-SD Dienst registrieren', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_EXT, '🔧 Registering DNS-SD service', 0);
 
         $mdnsID = @IPS_GetInstanceListByModuleID('{780B2D48-916C-4D59-AD35-5A429B2355A5}')[0] ?? 0;
         if ($mdnsID === 0) {
-            $this->SendDebug(__FUNCTION__, '⚠️ Keine DNS-SD Control Instanz gefunden!', 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_EXT, '⚠️ No DNS-SD Control instance found!', 0);
             return;
         }
 
@@ -2131,7 +2130,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
         if (!empty($existingOnPort)) {
             $names = array_map(fn($e) => ($e['Name'] ?? '?') . '@' . ($e['Port'] ?? '?'), array_values($existingOnPort));
-            $this->SendDebug(__FUNCTION__, 'ℹ️ mDNS-Eintrag existiert bereits (RegType=' . $serviceType . ', Port=' . $servicePort . '): ' . json_encode($names) . ' – kein weiterer Eintrag wird hinzugefügt.', 0);
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_EXT, 'ℹ️ mDNS entry already exists (RegType=' . $serviceType . ', Port=' . $servicePort . '): ' . json_encode($names) . ' – no additional entry will be added.', 0);
             return;
         }
 
@@ -2157,7 +2156,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         IPS_SetProperty($mdnsID, 'Services', json_encode(array_values($entries)));
         IPS_ApplyChanges($mdnsID);
 
-        $this->SendDebug(__FUNCTION__, '✅ mDNS-Eintrag hinzugefügt: ' . json_encode($newEntry), 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_EXT, '✅ mDNS entry added: ' . json_encode($newEntry), 0);
     }
 
     private function UnregisterMdnsService()
@@ -2200,24 +2199,24 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $response = @file_get_contents($url, false, $context);
 
         if ($response === false) {
-            $this->SendDebug(__FUNCTION__, '❌ Fehler beim Abruf der Icons von Remote 3', 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_EXT, '❌ Failed to retrieve icons from Remote 3', 0);
             return false;
         }
 
         $icons = json_decode($response, true);
         if (!is_array($icons)) {
-            $this->SendDebug(__FUNCTION__, '❌ Ungültige JSON-Antwort erhalten', 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_EXT, '❌ Invalid JSON response received from Remote 3', 0);
             return false;
         }
 
         foreach ($icons as $icon) {
             if (($icon['id'] ?? '') === 'symcon_icon.png') {
-                $this->SendDebug(__FUNCTION__, '✅ Symcon-Icon bereits vorhanden', 0);
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_EXT, '✅ Symcon icon already exists on Remote 3', 0);
                 return true;
             }
         }
 
-        $this->SendDebug(__FUNCTION__, 'ℹ️ Symcon-Icon nicht vorhanden', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_EXT, 'ℹ️ Symcon icon not found on Remote 3', 0);
         return false;
     }
 
@@ -2232,7 +2231,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $iconPath = __DIR__ . '/../libs/symcon_icon.png';
 
         if (!file_exists($iconPath)) {
-            $this->SendDebug(__FUNCTION__, "❌ Icon-Datei nicht gefunden: $iconPath", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_EXT, "❌ Icon-Datei nicht gefunden: $iconPath", 0);
             return;
         }
 
@@ -2265,9 +2264,9 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $response = @file_get_contents($url, false, $context);
 
         if ($response === false) {
-            $this->SendDebug(__FUNCTION__, '❌ Fehler beim Hochladen des Icons', 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_EXT, '❌ Fehler beim Hochladen des Icons', 0);
         } else {
-            $this->SendDebug(__FUNCTION__, '✅ Icon erfolgreich hochgeladen: ' . $response, 0);
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_EXT, '✅ Icon erfolgreich hochgeladen: ' . $response, 0);
         }
     }
 
@@ -2278,14 +2277,14 @@ class Remote3IntegrationDriver extends IPSModuleStrict
     {
         $remotes = json_decode($this->ReadAttributeString('remote_cores'), true);
         if (!is_array($remotes)) {
-            $this->SendDebug(__FUNCTION__, '⚠️ Keine gültige Remote Core Liste gefunden', 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_EXT, '⚠️ Keine gültige Remote Core Liste gefunden', 0);
             return;
         }
 
         foreach ($remotes as $remote) {
             $ip = $remote['host'];
             $apiKey = $remote['api_key'];
-            $this->SendDebug(__FUNCTION__, "🔍 Prüfe Icon für Remote {$remote['name']} @ $ip", 0);
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_EXT, "🔍 Prüfe Icon für Remote {$remote['name']} @ $ip", 0);
 
             if (!$this->RemoteIconExists($apiKey, $ip)) {
                 $this->UploadSymconIcon($apiKey, $ip);
@@ -2304,7 +2303,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         foreach ($coreInstances as $id) {
             $apiKey = @UCR_GetApiKey($id);
             if (empty($apiKey)) {
-                $this->SendDebug(__FUNCTION__, "⚠️ Kein API-Key für Instanz $id gefunden", 0);
+                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_EXT, "⚠️ Kein API-Key für Instanz $id gefunden", 0);
                 continue;
             }
 
@@ -2325,7 +2324,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         }
 
         $this->WriteAttributeString('remote_cores', json_encode($remotes));
-        $this->SendDebug(__FUNCTION__, '✅ Remote Cores aktualisiert: ' . json_encode($remotes), 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_EXT, '✅ Remote Cores aktualisiert: ' . json_encode($remotes), 0);
         return $remotes;
     }
 
@@ -2367,7 +2366,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 break;
 
             default:
-                $this->SendDebug(__FUNCTION__, "⚠️ Unbekannter entity_type: $entityType", 0);
+                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠️ Unbekannter entity_type: $entityType", 0);
                 break;
         }
     }
@@ -2377,18 +2376,18 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $entityId = $msgData['entity_id'] ?? '';
         $cmdId = $msgData['cmd_id'] ?? '';
 
-        $this->SendDebug(__FUNCTION__, "🔘 Button-Command: $cmdId für $entityId", 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "🔘 Button-Command: $cmdId für $entityId", 0);
         // Semaphore Lock hinzufügen (analog zu HandleSwitchCommand)
         if (preg_match('/_(\d+)$/', $entityId, $match)) {
             $objectId = (int)$match[1];
             $lockName = 'UCR_' . $objectId;
         } else {
-            $this->SendDebug(__FUNCTION__, "❌ Konnte Objekt-ID aus Entity-ID nicht extrahieren: $entityId", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "❌ Konnte Objekt-ID aus Entity-ID nicht extrahieren: $entityId", 0);
             return;
         }
 
         if (!IPS_SemaphoreEnter($lockName, 5000)) {
-            $this->SendDebug(__FUNCTION__, "❌ Semaphore '$lockName' konnte nicht gesetzt werden (Timeout)", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "❌ Semaphore '$lockName' konnte nicht gesetzt werden (Timeout)", 0);
             return;
         }
 
@@ -2399,14 +2398,14 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                     if (IPS_ScriptExists($entry['script_id'])) {
                         IPS_RunScript($entry['script_id']);
                     } else {
-                        $this->SendDebug(__FUNCTION__, "⚠️ Skript-ID {$entry['script_id']} existiert nicht", 0);
+                        $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠️ Skript-ID {$entry['script_id']} existiert nicht", 0);
                     }
                     $this->SendSuccessResponse((int)$reqId, $clientIP, (int)$clientPort);
                     IPS_SemaphoreLeave($lockName);
                     return;
                 }
             }
-            $this->SendDebug(__FUNCTION__, "⚠️ Kein passender Button gefunden für Entity-ID $entityId", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠️ Kein passender Button gefunden für Entity-ID $entityId", 0);
             IPS_SemaphoreLeave($lockName);
         } else {
             IPS_SemaphoreLeave($lockName);
@@ -2418,18 +2417,18 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $entityId = $msgData['entity_id'] ?? '';
         $cmdId = $msgData['cmd_id'] ?? '';
 
-        $this->SendDebug(__FUNCTION__, "🌡️ Climate-Command: $cmdId für $entityId", 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "🌡️ Climate-Command: $cmdId für $entityId", 0);
 
         if (preg_match('/_(\d+)$/', $entityId, $match)) {
             $objectId = (int)$match[1];
             $lockName = 'UCR_' . $objectId;
         } else {
-            $this->SendDebug(__FUNCTION__, "❌ Konnte Objekt-ID aus Entity-ID nicht extrahieren: $entityId", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "❌ Konnte Objekt-ID aus Entity-ID nicht extrahieren: $entityId", 0);
             return;
         }
 
         if (!IPS_SemaphoreEnter($lockName, 5000)) {
-            $this->SendDebug(__FUNCTION__, "❌ Semaphore '$lockName' konnte nicht gesetzt werden (Timeout)", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "❌ Semaphore '$lockName' konnte nicht gesetzt werden (Timeout)", 0);
             return;
         }
 
@@ -2447,7 +2446,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         }
 
         if (!$status_var_id) {
-            $this->SendDebug(__FUNCTION__, "⚠️ Kein passender Climate-Eintrag gefunden für Entity-ID $entityId", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠️ Kein passender Climate-Eintrag gefunden für Entity-ID $entityId", 0);
             IPS_SemaphoreLeave($lockName);
             return;
         }
@@ -2480,7 +2479,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 }
                 break;
             default:
-                $this->SendDebug(__FUNCTION__, "⚠️ Unbekannter Climate-Command: $cmdId", 0);
+                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠️ Unbekannter Climate-Command: $cmdId", 0);
                 IPS_SemaphoreLeave($lockName);
                 return;
         }
@@ -2498,18 +2497,18 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $cmdId = $msgData['cmd_id'] ?? '';
         $params = $msgData['params'] ?? [];
 
-        $this->SendDebug(__FUNCTION__, "🪟 Cover-Command: $cmdId für $entityId", 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "🪟 Cover-Command: $cmdId für $entityId", 0);
 
         if (preg_match('/_(\d+)$/', $entityId, $match)) {
             $objectId = (int)$match[1];
             $lockName = 'UCR_' . $objectId;
         } else {
-            $this->SendDebug(__FUNCTION__, "❌ Konnte Objekt-ID aus Entity-ID nicht extrahieren: $entityId", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "❌ Konnte Objekt-ID aus Entity-ID nicht extrahieren: $entityId", 0);
             return;
         }
 
         if (!IPS_SemaphoreEnter($lockName, 5000)) {
-            $this->SendDebug(__FUNCTION__, "❌ Semaphore '$lockName' konnte nicht gesetzt werden (Timeout)", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "❌ Semaphore '$lockName' konnte nicht gesetzt werden (Timeout)", 0);
             return;
         }
 
@@ -2526,7 +2525,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         }
 
         if (!$positionVar && !$controlVar) {
-            $this->SendDebug(__FUNCTION__, "⚠️ Kein passender Cover-Eintrag gefunden für Entity-ID $entityId", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠️ Kein passender Cover-Eintrag gefunden für Entity-ID $entityId", 0);
             IPS_SemaphoreLeave($lockName);
             return;
         }
@@ -2536,63 +2535,63 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         switch ($cmdId) {
             case 'open':
                 if ($controlVar) {
-                    $this->SendDebug(__FUNCTION__, "🔧 Versuche zu öffnen: controlVar=$controlVar", 0);
+                    $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "🔧 Versuche zu öffnen: controlVar=$controlVar", 0);
                     if (IPS_VariableExists($controlVar)) {
                         RequestAction($controlVar, 0); // 0 = open
-                        $this->SendDebug(__FUNCTION__, "✅ Öffne Cover (RequestAction $controlVar mit 0)", 0);
+                        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "✅ Öffne Cover (RequestAction $controlVar mit 0)", 0);
                         $attributes['state'] = 'OPEN';
                     } else {
-                        $this->SendDebug(__FUNCTION__, "❌ Variable für open existiert nicht: ID=$controlVar", 0);
+                        $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "❌ Variable für open existiert nicht: ID=$controlVar", 0);
                     }
                 } else {
-                    $this->SendDebug(__FUNCTION__, "⚠️ controlVar für open fehlt", 0);
+                    $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠️ controlVar für open fehlt", 0);
                 }
                 break;
             case 'close':
                 if ($controlVar) {
-                    $this->SendDebug(__FUNCTION__, "🔧 Versuche zu schließen: controlVar=$controlVar", 0);
+                    $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "🔧 Versuche zu schließen: controlVar=$controlVar", 0);
                     if (IPS_VariableExists($controlVar)) {
                         RequestAction($controlVar, 2); // 2 = close
-                        $this->SendDebug(__FUNCTION__, "✅ Schließe Cover (RequestAction $controlVar mit 2)", 0);
+                        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "✅ Schließe Cover (RequestAction $controlVar mit 2)", 0);
                         $attributes['state'] = 'CLOSED';
                     } else {
-                        $this->SendDebug(__FUNCTION__, "❌ Variable für close existiert nicht: ID=$controlVar", 0);
+                        $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "❌ Variable für close existiert nicht: ID=$controlVar", 0);
                     }
                 } else {
-                    $this->SendDebug(__FUNCTION__, "⚠️ controlVar für close fehlt", 0);
+                    $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠️ controlVar für close fehlt", 0);
                 }
                 break;
             case 'stop':
                 if ($controlVar) {
-                    $this->SendDebug(__FUNCTION__, "🔧 Versuche zu stoppen: controlVar=$controlVar", 0);
+                    $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "🔧 Versuche zu stoppen: controlVar=$controlVar", 0);
                     if (IPS_VariableExists($controlVar)) {
                         RequestAction($controlVar, 1); // 1 = stop
-                        $this->SendDebug(__FUNCTION__, "✅ Stoppe Cover (RequestAction $controlVar mit 1)", 0);
+                        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "✅ Stoppe Cover (RequestAction $controlVar mit 1)", 0);
                         $attributes['state'] = 'STOPPED';
                     } else {
-                        $this->SendDebug(__FUNCTION__, "❌ Variable für stop existiert nicht: ID=$controlVar", 0);
+                        $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "❌ Variable für stop existiert nicht: ID=$controlVar", 0);
                     }
                 } else {
-                    $this->SendDebug(__FUNCTION__, "⚠️ controlVar für stop fehlt", 0);
+                    $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠️ controlVar für stop fehlt", 0);
                 }
                 break;
             case 'position':
                 if (isset($params['position']) && $positionVar) {
-                    $this->SendDebug(__FUNCTION__, "🔧 Zielposition erhalten: " . $params['position'], 0);
+                    $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "🔧 Zielposition erhalten: " . $params['position'], 0);
                     if (IPS_VariableExists($positionVar)) {
                         RequestAction($positionVar, (int)$params['position']);
-                        $this->SendDebug(__FUNCTION__, "✅ Position gesetzt auf " . $params['position'], 0);
+                        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "✅ Position gesetzt auf " . $params['position'], 0);
                         $attributes['state'] = 'SETTING';
                         $attributes['position'] = (int)$params['position'];
                     } else {
-                        $this->SendDebug(__FUNCTION__, "❌ Variable für Position existiert nicht: ID=$positionVar", 0);
+                        $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "❌ Variable für Position existiert nicht: ID=$positionVar", 0);
                     }
                 } else {
-                    $this->SendDebug(__FUNCTION__, "⚠️ Position-Parameter oder ID fehlt", 0);
+                    $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠️ Position-Parameter oder ID fehlt", 0);
                 }
                 break;
             default:
-                $this->SendDebug(__FUNCTION__, "⚠️ Unbekannter Cover-Command: $cmdId", 0);
+                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠️ Unbekannter Cover-Command: $cmdId", 0);
                 IPS_SemaphoreLeave($lockName);
                 return;
         }
@@ -2609,7 +2608,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $entityId = $msgData['entity_id'] ?? '';
         $cmdId = $msgData['cmd_id'] ?? '';
 
-        $this->SendDebug(__FUNCTION__, "🎵 MediaPlayer-Command: $cmdId für $entityId", 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "📡 IR Emitter command: $cmdId for $entityId", 0);
         // TODO: Ansteuerung einer Climate-Instanz basierend auf cmdId
         $this->SendSuccessResponse((int)$reqId, $clientIP, (int)$clientPort);
     }
@@ -2624,19 +2623,19 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             $objectId = (int)$match[1];
             $lockName = 'UCR_' . $objectId;
         } else {
-            $this->SendDebug(__FUNCTION__, "❌ Konnte Objekt-ID aus Entity-ID nicht extrahieren: $entityId", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "❌ Konnte Objekt-ID aus Entity-ID nicht extrahieren: $entityId", 0);
             return;
         }
 
         if (!IPS_SemaphoreEnter($lockName, 5000)) {
-            $this->SendDebug(__FUNCTION__, "❌ Semaphore '$lockName' konnte nicht gesetzt werden (Timeout)", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "❌ Semaphore '$lockName' konnte nicht gesetzt werden (Timeout)", 0);
             return;
         }
 
         if (!empty($params)) {
-            $this->SendDebug(__FUNCTION__, "💡 Light-Command: $cmdId für $entityId (mit Parametern: " . json_encode($params) . ")", 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "💡 Light-Command: $cmdId für $entityId (mit Parametern: " . json_encode($params) . ")", 0);
         } else {
-            $this->SendDebug(__FUNCTION__, "💡 Light-Command: $cmdId für $entityId", 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "💡 Light-Command: $cmdId für $entityId", 0);
         }
 
         $lightMapping = json_decode($this->ReadPropertyString('light_mapping'), true);
@@ -2653,7 +2652,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         }
 
         if (!$switch_var_id) {
-            $this->SendDebug(__FUNCTION__, "⚠️ Kein passender Light-Eintrag gefunden für Entity-ID $entityId", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠️ Kein passender Light-Eintrag gefunden für Entity-ID $entityId", 0);
             IPS_SemaphoreLeave($lockName);
             return;
         }
@@ -2671,10 +2670,10 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 $newState = !$currentState;
             }
         }
-        $this->SendDebug(__FUNCTION__, "💡 Light-Command: $cmdId für $entityId, setze Status von " . json_encode($currentState) . " auf " . json_encode($newState), 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "💡 Light-Command: $cmdId für $entityId, setze Status von " . json_encode($currentState) . " auf " . json_encode($newState), 0);
         // NEU: Block ersetzt, damit Parameter immer weiterverarbeitet werden!
         if ($newState !== null && $newState !== $currentState) {
-            $this->SendDebug(__FUNCTION__, "✅ RequestAction für Switch VarID $switch_var_id mit Wert " . json_encode($newState), 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "✅ RequestAction für Switch VarID $switch_var_id mit Wert " . json_encode($newState), 0);
             RequestAction($switch_var_id, $newState);
             usleep(10000); // Wartezeit zur Synchronisation
         }
@@ -2684,14 +2683,14 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         // Auswertung der optionalen Parameter
         if (isset($params['brightness']) && $brightness_var_id && IPS_VariableExists($brightness_var_id)) {
             $brightness = $this->ConvertBrightnessToSymcon((int)$params['brightness'], $brightness_var_id);
-            $this->SendDebug(__FUNCTION__, "✅ Set brightness to $brightness", 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "✅ Set brightness to $brightness", 0);
             RequestAction($brightness_var_id, $brightness);
             usleep(10000);
         }
 
         if (isset($params['color_temperature']) && $color_temp_var_id && IPS_VariableExists($color_temp_var_id)) {
             $value = (int)$params['color_temperature'];
-            $this->SendDebug(__FUNCTION__, "✅ Set color temperature to $value", 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "✅ Set color temperature to $value", 0);
             RequestAction($color_temp_var_id, $value);
             usleep(10000);
         }
@@ -2700,7 +2699,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             $h = $params['hue'] ?? 0;
             $s = $params['saturation'] ?? 0;
             $hexColor = $this->ConvertHueSaturationToHexColor($h, $s);
-            $this->SendDebug(__FUNCTION__, "✅ Set color to HEX $hexColor (aus Hue $h / Sat $s)", 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "✅ Set color to HEX $hexColor (aus Hue $h / Sat $s)", 0);
             RequestAction($color_var_id, $hexColor);
             usleep(10000);
         }
@@ -2853,18 +2852,18 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $entityId = $msgData['entity_id'] ?? '';
         $cmdId = $msgData['cmd_id'] ?? '';
 
-        $this->SendDebug(__FUNCTION__, "🎵 MediaPlayer-Command: $cmdId für $entityId", 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "🎵 MediaPlayer-Command: $cmdId for $entityId", 0);
 
         if (preg_match('/_(\d+)$/', $entityId, $match)) {
             $objectId = (int)$match[1];
             $lockName = 'UCR_' . $objectId;
         } else {
-            $this->SendDebug(__FUNCTION__, "❌ Konnte Objekt-ID aus Entity-ID nicht extrahieren: $entityId", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "❌ Could not extract object ID from entity ID: $entityId", 0);
             return;
         }
 
         if (!IPS_SemaphoreEnter($lockName, 5000)) {
-            $this->SendDebug(__FUNCTION__, "❌ Semaphore '$lockName' konnte nicht gesetzt werden (Timeout)", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "❌ Semaphore '$lockName' could not be acquired (timeout)", 0);
             return;
         }
 
@@ -2883,7 +2882,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         }
 
         if (!$found) {
-            $this->SendDebug(__FUNCTION__, "⚠️ Kein passender MediaPlayer-Eintrag für Entity-ID $entityId", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠️ No matching media player mapping found for entity ID $entityId", 0);
             IPS_SemaphoreLeave($lockName);
             return;
         }
@@ -2938,10 +2937,10 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                             if ($newValue !== null) {
                                 RequestAction($varId, $newValue);
                             } else {
-                                $this->SendDebug(__FUNCTION__, "⏭ Keine passende Alternative für play/pause im Profil gefunden", 0);
+                                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⏭ No suitable alternative for play/pause found in profile", 0);
                             }
                         } else {
-                            $this->SendDebug(__FUNCTION__, "⚠ Kein gültiges Profil für play/pause vorhanden", 0);
+                            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠ No valid profile available for play/pause", 0);
                         }
                     }
                 }
@@ -2971,10 +2970,10 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                                 RequestAction($varId, $newValue);
                                 $attributes['state'] = strtoupper($cmdId);
                             } else {
-                                $this->SendDebug(__FUNCTION__, "⏭ Keine passende Alternative für $cmdId im Profil gefunden", 0);
+                                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⏭ No suitable alternative for $cmdId found in profile", 0);
                             }
                         } else {
-                            $this->SendDebug(__FUNCTION__, "⚠ Kein gültiges Profil für $cmdId vorhanden", 0);
+                            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠ No valid profile available for $cmdId", 0);
                         }
                     }
                 }
@@ -3015,10 +3014,10 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                                 RequestAction($varId, $newValue);
                                 $attributes['state'] = strtoupper($cmdId);
                             } else {
-                                $this->SendDebug(__FUNCTION__, "⏭ Keine passende Alternative für $cmdId im Profil gefunden", 0);
+                                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⏭ No suitable alternative for $cmdId found in profile", 0);
                             }
                         } else {
-                            $this->SendDebug(__FUNCTION__, "⚠ Kein gültiges Profil für $cmdId vorhanden", 0);
+                            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠ No valid profile available for $cmdId", 0);
                         }
                     }
                 }
@@ -3059,10 +3058,10 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                                 RequestAction($varId, $newValue);
                                 $attributes['state'] = strtoupper($cmdId);
                             } else {
-                                $this->SendDebug(__FUNCTION__, "⏭ Keine passende Alternative für $cmdId im Profil gefunden", 0);
+                                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⏭ No suitable alternative for $cmdId found in profile", 0);
                             }
                         } else {
-                            $this->SendDebug(__FUNCTION__, "⚠ Kein gültiges Profil für $cmdId vorhanden", 0);
+                            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠ No valid profile available for $cmdId", 0);
                         }
                     }
                 }
@@ -3099,10 +3098,10 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                                 RequestAction($varId, $targetValue);
                                 $attributes['state'] = strtoupper($cmdId);
                             } else {
-                                $this->SendDebug(__FUNCTION__, "⏭ Keine passende Ziffer $digit im Profil gefunden", 0);
+                                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⏭ No matching digit $digit found in profile", 0);
                             }
                         } else {
-                            $this->SendDebug(__FUNCTION__, "⚠ Kein gültiges Profil für $cmdId vorhanden", 0);
+                            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠ No valid profile available for $cmdId", 0);
                         }
                     }
                 }
@@ -3125,7 +3124,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             case 'audio_track':
             case 'subtitle':
             case 'settings':
-                $this->SendDebug(__FUNCTION__, "⚠️ Befehl $cmdId ist dokumentiert aber erfordert manuelles Mapping oder Skriptausführung", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠️ Command $cmdId is documented but requires manual mapping or script execution", 0);
                 break;
 
             case 'seek':
@@ -3190,7 +3189,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
             case 'channel_up':
             case 'channel_down':
-                $this->SendDebug(__FUNCTION__, "⚠️ Befehl $cmdId ist dokumentiert aber keine direkte Variable vorgesehen", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠️ Command $cmdId is documented but no direct variable is mapped", 0);
                 break;
 
             case 'select_source':
@@ -3208,7 +3207,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 break;
 
             default:
-                $this->SendDebug(__FUNCTION__, "⚠️ Unbekannter MediaPlayer-Command: $cmdId", 0);
+                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠️ Unknown media player command: $cmdId", 0);
                 break;
         }
 
@@ -3228,18 +3227,18 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $entityId = $msgData['entity_id'] ?? '';
         $cmdId = $msgData['cmd_id'] ?? '';
 
-        $this->SendDebug(__FUNCTION__, "🎮 Remote-Command: $cmdId für $entityId", 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "🎮 Remote-Command: $cmdId for $entityId", 0);
 
         if (preg_match('/_(\d+)$/', $entityId, $match)) {
             $objectId = (int)$match[1];
             $lockName = 'UCR_' . $objectId;
         } else {
-            $this->SendDebug(__FUNCTION__, "❌ Konnte Objekt-ID aus Entity-ID nicht extrahieren: $entityId", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "❌ Could not extract object ID from entity ID: $entityId", 0);
             return;
         }
 
         if (!IPS_SemaphoreEnter($lockName, 5000)) {
-            $this->SendDebug(__FUNCTION__, "❌ Semaphore '$lockName' konnte nicht gesetzt werden (Timeout)", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "❌ Semaphore '$lockName' could not be acquired (timeout)", 0);
             return;
         }
 
@@ -3254,7 +3253,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         }
 
         if (!$commandScript || !IPS_ScriptExists($commandScript)) {
-            $this->SendDebug(__FUNCTION__, "⚠️ Kein passender Remote-Eintrag oder Skript gefunden für Entity-ID $entityId", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠️ No matching remote mapping or script found for entity ID $entityId", 0);
             IPS_SemaphoreLeave($lockName);
             return;
         }
@@ -3280,14 +3279,14 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             $objectId = (int)$match[1];
             $lockName = 'UCR_' . $objectId;
         } else {
-            $this->SendDebug(__FUNCTION__, "❌ Konnte Objekt-ID aus Entity-ID nicht extrahieren: $entityId", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "❌ Could not extract object ID from entity ID: $entityId", 0);
             return;
         }
         if (!IPS_SemaphoreEnter($lockName, 5000)) {
-            $this->SendDebug(__FUNCTION__, "❌ Semaphore '$lockName' konnte nicht gesetzt werden (Timeout)", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "❌ Semaphore '$lockName' could not be acquired (timeout)", 0);
             return;
         }
-        $this->SendDebug(__FUNCTION__, "Switch-Command: $cmdId für $entityId", 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "🔌 Switch-Command: $cmdId for $entityId", 0);
         $mapping = json_decode($this->ReadPropertyString('switch_mapping'), true);
         foreach ($mapping as $entry) {
             if ('switch_' . $entry['instance_id'] === $entityId) {
@@ -3302,25 +3301,25 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                     if (is_bool($current)) {
                         $newState = !$current;
                     } else {
-                        $this->SendDebug(__FUNCTION__, "⚠️ Aktueller Wert ist kein Bool: $current", 0);
+                        $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠️ Current value is not boolean: $current", 0);
                         IPS_SemaphoreLeave($lockName);
                         return;
                     }
                 } else {
-                    $this->SendDebug(__FUNCTION__, "⚠️ Unbekannter Switch-Command: $cmdId", 0);
+                    $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠️ Unknown switch command: $cmdId", 0);
                     IPS_SemaphoreLeave($lockName);
                     return;
                 }
 
                 if ($newState !== null && $current !== $newState) {
-                    $this->SendDebug(__FUNCTION__, "✅ RequestAction für VarID $varId mit Wert " . json_encode($newState), 0);
+                    $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "✅ RequestAction for VarID $varId with value " . json_encode($newState), 0);
                     RequestAction($varId, $newState);
                     usleep(10000); // 10ms
                     $updated = @GetValue($varId);  // neuen Zustand auslesen
                     $stateStr = $updated ? 'ON' : 'OFF';
                     $this->SendEntityChange("switch_$varId", "switch", ['state' => $stateStr]);
                 } else {
-                    $this->SendDebug(__FUNCTION__, "⏩ Kein RequestAction erforderlich – Zustand unverändert", 0);
+                    $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "⏩ No RequestAction required – state unchanged", 0);
                 }
                 $this->SendSuccessResponse((int)$reqId, $clientIP, (int)$clientPort);
                 // Semaphore am Ende freigeben
@@ -3328,7 +3327,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 return;
             }
         }
-        $this->SendDebug(__FUNCTION__, "⚠️ Kein passender Switch gefunden für Entity-ID $entityId", 0);
+        $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠️ No matching switch mapping found for entity ID $entityId", 0);
         IPS_SemaphoreLeave($lockName);
     }
 
@@ -3344,7 +3343,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             'msg' => 'result',
             'msg_data' => new stdClass()
         ];
-        $this->SendDebug(__FUNCTION__, "📤 Abschlussantwort an $clientIP:$clientPort für req_id $reqId", 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_IO, "📤 Abschlussantwort an $clientIP:$clientPort für req_id $reqId", 0);
         $this->PushToRemoteClient($response, $clientIP, $clientPort);
     }
 
@@ -3354,23 +3353,23 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         parent::MessageSink($TimeStamp, $SenderID, $Message, $Data);
 
         if ($Message == IPS_KERNELMESSAGE && $Data[0] == KR_READY) {
-            $this->SendDebug(__FUNCTION__, '✅ Kernel READY – sende Initial-Events', 0);
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_EXT, '✅ Kernel READY – sending initial events', 0);
             $this->RegisterHook('/hook/unfoldedcircle');
             $this->RegisterMdnsService();
             $this->RefreshRemoteCores();
-            $this->SendDebug(__FUNCTION__, '🔁 Setze Timerintervalle: PingDeviceState=30s, UpdateAllEntityStates=15s', 0);
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_EXT, '🔁 Setting timer intervals: PingDeviceState=30s, UpdateAllEntityStates=15s', 0);
             $this->SetTimerInterval("PingDeviceState", 30000); // alle 30 Sekunden den Status senden
             $this->SetTimerInterval("UpdateAllEntityStates", 15000); // alle 15 Sekunden den Status senden
             $this->SendInitialOnlineEventsForAllClients();
             $this->EnsureTokenInitialized();
         }
         if ($Message == VM_UPDATE) {
-            $this->SendDebug(__FUNCTION__, "📣 Variablen-Update empfangen: ID $SenderID", 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_VM, "📣 VM_UPDATE received: VarID $SenderID", 0);
 
             // Semaphore-Check für Switches (Events von RequestAction blockieren)
             $lockName = 'UCR_' . $SenderID;
             if (!IPS_SemaphoreEnter($lockName, 1)) {
-                $this->SendDebug(__FUNCTION__, "⏸ $SenderID gesperrt durch aktiven Befehl – Event wird unterdrückt", 0);
+                $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_VM, "⏸ $SenderID locked by active command – suppressing event", 0);
                 return;
             }
             IPS_SemaphoreLeave($lockName);
@@ -3426,7 +3425,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 continue;
             }
 
-            $this->SendDebug(__FUNCTION__, "📤 Sende entity_change für $entityId an $ip:$port", 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "📤 Sending entity_change for $entityId to $ip:$port", 0);
             $this->PushToRemoteClient($event, $ip, (int)$port);
         }
     }
@@ -3457,7 +3456,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                     }
                     $this->stateBuffer[$varId] = $currentBool;
 
-                    $this->SendDebugExtended(__FUNCTION__, "✅ Gefundener Switch-Eintrag für VarID $varId → State: $stateStr", 0);
+                    $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "✅ Switch mapping found for VarID $varId → State: $stateStr", 0);
 
                     $event = [
                         'kind' => 'event',
@@ -3482,7 +3481,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         if (is_array($buttonMapping)) {
             foreach ($buttonMapping as $entry) {
                 if (isset($entry['var_id']) && (int)$entry['var_id'] === $varId) {
-                    $this->SendDebug(__FUNCTION__, "✅ Gefundener Button-Eintrag für VarID $varId", 0);
+                    $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "✅ Button mapping found for VarID $varId", 0);
 
                     $event = [
                         'kind' => 'event',
@@ -3572,7 +3571,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                         'attributes' => $attributes
                     ]
                 ];
-                $this->SendDebug(__FUNCTION__, "📤 Entity-Change für Light $varId", 0);
+                $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "📤 Entity change for light VarID $varId", 0);
                 $this->BroadcastEventToClients($event);
                 return;
             }
@@ -3600,7 +3599,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                         ]
                     ]
                 ];
-                $this->SendDebug(__FUNCTION__, "📤 Entity-Change für Cover $varId", 0);
+                $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "📤 Entity change for cover VarID $varId", 0);
                 $this->BroadcastEventToClients($event);
                 return;
             }
@@ -3644,7 +3643,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                         'attributes' => $attributes
                     ]
                 ];
-                $this->SendDebug(__FUNCTION__, "📤 Entity-Change für Climate {$entry['status_var_id']}", 0);
+                $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "📤 Entity change for climate VarID {$entry['status_var_id']}", 0);
                 $this->BroadcastEventToClients($event);
                 return;
             }
@@ -3747,7 +3746,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                                 'attributes' => $attributes
                             ]
                         ];
-                        $this->SendDebug(__FUNCTION__, "📤 Entity-Change für Media Player $entityId", 0);
+                        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "📤 Entity change for media player $entityId", 0);
                         $this->BroadcastEventToClients($event);
                         return;
                     }
@@ -3755,7 +3754,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             }
         }
 
-        $this->SendDebug(__FUNCTION__, "⚠️ Kein Mapping für VarID $varId gefunden", 0);
+        $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠️ No mapping found for VarID $varId", 0);
     }
 
     /**
@@ -3776,7 +3775,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             if ((!$auth && !$whitelisted) || !$port) {
                 continue;
             }
-            $this->SendDebug(__FUNCTION__, "📤 Sende Event an $ip:$port", 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "📤 Sending event to $ip:$port", 0);
             $this->PushToRemoteClient($event, $ip, (int)$port);
         }
     }
@@ -3832,7 +3831,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                         ]
                     ];
 
-                    $this->SendDebug(__FUNCTION__, "📤 Online-Event für sensor_{$sensor['var_id']} an $clientIP:$port", 0);
+                    $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "📤 Online event for sensor_{$sensor['var_id']} to $clientIP:$port", 0);
                     $this->PushToRemoteClient($event, $clientIP, $port);
                 }
             }
@@ -3860,7 +3859,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                         ]
                     ];
 
-                    $this->SendDebug(__FUNCTION__, "📤 Online-Event für switch_{$switch['var_id']} an $clientIP:$port", 0);
+                    $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "📤 Online event for switch_{$switch['var_id']} to $clientIP:$port", 0);
                     $this->PushToRemoteClient($event, $clientIP, $port);
                 }
             }
@@ -3904,7 +3903,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                         ]
                     ];
 
-                    $this->SendDebug(__FUNCTION__, "📤 Online-Event für light_{$light['switch_var_id']} an $clientIP:$port", 0);
+                    $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "📤 Online event for light_{$light['switch_var_id']} to $clientIP:$port", 0);
                     $this->PushToRemoteClient($event, $clientIP, $port);
                 }
             }
@@ -3916,20 +3915,20 @@ class Remote3IntegrationDriver extends IPSModuleStrict
      */
     protected function ProcessHookData(): void
     {
-        $this->SendDebug(__FUNCTION__, '🛜 SERVER REQUEST_URI: ' . ($_SERVER['REQUEST_URI'] ?? '---'), 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_HOOK, '🛜 SERVER REQUEST_URI: ' . ($_SERVER['REQUEST_URI'] ?? '---'), 0);
 
         $uri = $_SERVER['REQUEST_URI'] ?? '';
         $method = $_SERVER['REQUEST_METHOD'] ?? '';
         $remoteIP = $_SERVER['REMOTE_ADDR'] ?? '';
         $remotePort = intval($_SERVER['REMOTE_PORT']) ?? 0;
-        $this->SendDebug(__FUNCTION__, "📥 Request URI: $uri | Method: $method | IP: $remoteIP", 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_HOOK, "📥 Request URI: $uri | Method: $method | IP: $remoteIP", 0);
 
         if (strpos($uri, '/hook/unfoldedcircle') !== 0) {
             return;
         }
 
         if (!$this->authenticateClient($remoteIP, $remotePort, $_SERVER['HTTP_AUTH_TOKEN'] ?? null)) {
-            $this->SendDebug(__FUNCTION__, '❌ Webhook-Zugriff verweigert – Authentifizierung fehlgeschlagen', 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_HOOK, '❌ Webhook access denied – authentication failed', 0);
 
             $this->PushToRemoteClientHook([
                 'kind' => 'resp',
@@ -3945,12 +3944,12 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         }
 
         $payload = file_get_contents('php://input');
-        $this->SendDebug(__FUNCTION__, "Raw Data: " . $payload, 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_HOOK, "Raw Data: " . $payload, 0);
 
 
         // Prüfen auf PING-Frame (WebSocket)
         if (WebSocketUtils::IsPingFrame($payload)) {
-            $this->SendDebug(__FUNCTION__, "🔁 PING erkannt – sende PONG", 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_HOOK, '🔁 PING detected – would send PONG', 0);
             // $pong = WebSocketUtils::PackPong();
             // todo is webhook sending PONG ?
             // $this->PushPongToRemoteClient($pong);
@@ -3960,11 +3959,11 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         // JSON-Nutzdaten lesen
         $data = json_decode($payload, true);
         if (!is_array($data)) {
-            $this->SendDebug(__FUNCTION__, '❌ Fehler: Ungültiges JSON empfangen!', 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_HOOK, '❌ Error: invalid JSON received!', 0);
             return;
         }
 
-        $this->SendDebug(__FUNCTION__, '📨 Empfangene Daten: ' . json_encode($data), 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_HOOK, '📨 Received data: ' . json_encode($data), 0);
 
 
         $response = [];
@@ -3996,7 +3995,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                     break;
 
                 default:
-                    $this->SendDebug(__FUNCTION__, '⚠️ Unbekannte Anfrage: ' . $data['msg'], 0);
+                    $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_HOOK, '⚠️ Unknown request: ' . $data['msg'], 0);
                     $response = [
                         'kind' => 'resp',
                         'msg' => 'result',
@@ -4009,7 +4008,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                     break;
             }
 
-            $this->SendDebug(__FUNCTION__, '📤 Antwort: ' . json_encode($response), 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_HOOK, '📤 Response: ' . json_encode($response), 0);
             $this->PushToRemoteClientHook($response, $remoteIP, $remotePort);
         }
     }
@@ -4017,7 +4016,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
     private function PushToRemoteClientHook(array $data, string $remoteIP, int $remotePort): void
     {
         $json = json_encode($data);
-        $this->SendDebug(__FUNCTION__, '📡 Sende an Remote: ' . $json, 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_HOOK, '📡 Sending to remote: ' . $json, 0);
         $ids = IPS_GetInstanceListByModuleID('{015A6EB8-D6E5-4B93-B496-0D3F77AE9FE1}');
         if (count($ids) > 0) {
             WC_PushMessageEx($ids[0], '/hook/unfoldedcircle', $json, $remoteIP, $remotePort);
@@ -4028,7 +4027,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
     {
         $token = bin2hex(random_bytes(16)); // 32 characters hex string
         $this->WriteAttributeString('token', $token);
-        $this->SendDebug(__FUNCTION__, '🔑 Neuer Token generiert: ' . $token, 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_AUTH, '🔑 New token generated: ' . $token, 0);
         $this->UpdateFormField("token", "value", $token);
     }
 
@@ -4075,7 +4074,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             }
         }
 
-        $this->SendDebug(__FUNCTION__, '📋 Gerätevorschläge: ' . json_encode($result), 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '📋 Device suggestions: ' . json_encode($result), 0);
 
         echo json_encode($result, JSON_PRETTY_PRINT);
     }
@@ -4083,20 +4082,18 @@ class Remote3IntegrationDriver extends IPSModuleStrict
     /**
      * Manuelle Registrierung des Treibers bei Remote-Instanzen
      */
-    public function RegisterDriverManually()
+    public function RegisterDriverManually(): void
     {
         $this->RefreshRemoteCores();
         $remotes = json_decode($this->ReadAttributeString('remote_cores'), true);
         $token = $this->ReadAttributeString('token');
 
         if (!is_array($remotes)) {
-            $this->SendDebug(__FUNCTION__, "❌ Keine Remote-Instanzen gefunden", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_EXT, '❌ No remote instances found', 0);
             return;
         }
 
         foreach ($remotes as $remote) {
-
-
             $ip = $remote['host'];
             $apiKey = $remote['api_key'];
 
@@ -4105,8 +4102,8 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 $hostValue = $ip; // Fallback: Remote IP
             }
 
-            $this->SendDebugExtended(__FUNCTION__, "🔍 Registriere Treiber bei $ip (Symcon Host: $hostValue)", 0);
-            $this->SendDebugExtended(__FUNCTION__, "📡 API-Key: $apiKey | Token: $token", 0);
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_EXT, "🔍 Registering driver on $ip (Symcon host: $hostValue)", 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_AUTH, "📡 API key present=" . (!empty($apiKey) ? 'yes' : 'no') . " | token present=" . (!empty($token) ? 'yes' : 'no'), 0);
             $payload = [
                 'driver_id' => 'symcon-unfoldedcircle',
                 'name' => [
@@ -4152,9 +4149,9 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             $response = @file_get_contents($url, false, $context);
 
             if ($response === false) {
-                $this->SendDebug(__FUNCTION__, "❌ Fehler bei POST an $url", 0);
+                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_EXT, "❌ POST to $url failed", 0);
             } else {
-                $this->SendDebug(__FUNCTION__, "✅ Treiberregistrierung erfolgreich: $response", 0);
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_EXT, "✅ Driver registration succeeded: $response", 0);
             }
         }
     }
@@ -4185,13 +4182,13 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 $ip = $clientKey;
                 $port = $info['port'] ?? '';
                 if ($port === '') {
-                    $this->SendDebug(__FUNCTION__, "⚠️ Kein Port gefunden für clientKey: $clientKey", 0);
+                    $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_FORM, "⚠️ No port found for clientKey: $clientKey", 0);
                     continue;
                 }
             }
 
             if (in_array($ip, $seenIPs)) {
-                $this->SendDebug(__FUNCTION__, "ℹ️ Überspringe Duplikat für IP: $ip", 0);
+                $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_FORM, "ℹ️ Skipping duplicate IP: $ip", 0);
                 continue;
             }
             $seenIPs[] = $ip;
@@ -4221,7 +4218,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
     {
         $sessions = json_decode($this->ReadAttributeString('client_sessions'), true);
         if (!is_array($sessions)) {
-            $this->SendDebug(__FUNCTION__, '⚠️ client_sessions ist kein Array', 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_FORM, '⚠️ client_sessions is not an array', 0);
             return;
         }
 
@@ -4231,13 +4228,13 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             // Akzeptiere IP:Port oder IP-only, wenn Port im Info-Block vorhanden und numerisch
             if (strpos($clientKey, ':') === false) {
                 if (!isset($info['port']) || !is_numeric($info['port'])) {
-                    $this->SendDebug(__FUNCTION__, "🧹 Entferne veralteten IP-Key ohne gültigen Port: $clientKey", 0);
+                    $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_FORM, "🧹 Removing stale IP key without valid port: $clientKey", 0);
                     continue;
                 }
             }
 
             if (!is_array($info) || !isset($info['authenticated']) || !isset($info['subscribed'])) {
-                $this->SendDebug(__FUNCTION__, "🧹 Entferne ungültigen Datenblock für $clientKey", 0);
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_FORM, "🧹 Removing invalid data block for $clientKey", 0);
                 continue;
             }
 
@@ -4245,7 +4242,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         }
 
         $this->WriteAttributeString('client_sessions', json_encode($cleaned));
-        $this->SendDebug(__FUNCTION__, '✅ Aufgeräumte Sitzungen: ' . json_encode($cleaned), 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_FORM, '✅ Cleaned sessions: ' . json_encode($cleaned), 0);
     }
 
     /**
@@ -4258,20 +4255,20 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
         // DeviceRegistry-Mapping abrufen
         if (!class_exists('DeviceRegistry')) {
-            $this->SendDebug(__FUNCTION__, "❌ DeviceRegistry-Klasse nicht gefunden", 0);
+            $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_DISCOVERY, '❌ DeviceRegistry class not found', 0);
             return null;
         }
 
         $deviceMapping = DeviceRegistry::getDeviceMappingByGUID($guid);
         if (!$deviceMapping || !isset($deviceMapping['mapping'])) {
-            $this->SendDebug(__FUNCTION__, "❌ Kein Mapping in DeviceRegistry für GUID $guid", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY, "❌ No mapping in DeviceRegistry for GUID $guid", 0);
             return null;
         }
 
         // FeatureKey zu Ident auflösen
         $identMap = array_flip($deviceMapping['mapping']);
         if (!isset($identMap[$featureKey])) {
-            $this->SendDebug(__FUNCTION__, "❌ Kein Mapping für Feature $featureKey in GUID $guid", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY, "❌ No mapping for feature $featureKey in GUID $guid", 0);
             return null;
         }
 
@@ -4279,7 +4276,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $varID = @IPS_GetObjectIDByIdent($expectedIdent, $instanceID);
 
         if (!$varID || !IPS_VariableExists($varID)) {
-            $this->SendDebug(__FUNCTION__, "❌ Variable mit Ident $expectedIdent nicht gefunden in Instanz $instanceID", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY, "❌ Variable with ident $expectedIdent not found in instance $instanceID", 0);
             return null;
         }
 
@@ -4299,7 +4296,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         foreach ($sessions as $clientKey => $info) {
             $clientKey = (string)$clientKey;
             $ip = $clientKey;
-            $this->SendDebug(__FUNCTION__, '🔎 Option source key=' . $clientKey . ' (colons=' . substr_count($clientKey, ':') . ')', 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_FORM, '🔎 Option source key=' . $clientKey . ' (colons=' . substr_count($clientKey, ':') . ')', 0);
 
             // Key format: [IPv6]:port
             if (preg_match('/^\[(.+)]:(\d+)$/', $clientKey, $m)) {
@@ -4310,7 +4307,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             }
             // Otherwise: treat as pure IP (IMPORTANT: IPv6 contains many colons)
 
-            $this->SendDebug(__FUNCTION__, '✅ Option parsed ip=' . $ip, 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_FORM, '✅ Option parsed ip=' . $ip, 0);
             // Deduplicate
             $existingValues = array_column($options, 'value');
             if (!in_array($ip, $existingValues, true)) {
@@ -4334,10 +4331,10 @@ class Remote3IntegrationDriver extends IPSModuleStrict
     public function DumpClientSessions(): void
     {
         $raw = $this->ReadAttributeString('client_sessions');
-        $this->SendDebug(__FUNCTION__, '📦 client_sessions (raw)=' . $raw, 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_FORM, '📦 client_sessions (raw)=' . $raw, 0);
 
         $parsed = $this->readSessions();
-        $this->SendDebug(__FUNCTION__, '📦 client_sessions (parsed)=' . json_encode($parsed), 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_FORM, '📦 client_sessions (parsed)=' . json_encode($parsed), 0);
 
         $this->GetKnownClientIPOptions(); // triggers detailed option logs
     }
@@ -4350,10 +4347,10 @@ class Remote3IntegrationDriver extends IPSModuleStrict
      */
     public function AutoDetectSensorType(int $VariableID): void
     {
-        $this->SendDebug(__FUNCTION__, "🔍 Auto-Erkennung Sensor-Typ für VarID $VariableID", 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, "🔍 Auto-Erkennung Sensor-Typ für VarID $VariableID", 0);
 
         if (!IPS_VariableExists($VariableID)) {
-            $this->SendDebug(__FUNCTION__, "❌ Variable $VariableID existiert nicht", 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY, "❌ Variable $VariableID existiert nicht", 0);
             return;
         }
 
@@ -4373,7 +4370,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             $type = 'voltage';
         }
 
-        $this->SendDebug(__FUNCTION__, "✅ Ermittelter Typ für Profil '$profile': $type", 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, "✅ Ermittelter Typ für Profil '$profile': $type", 0);
         $this->UpdateFormField("sensor_type", "value", $type);
         $this->UpdateFormField("sensor_type", "visible", true);
 
@@ -4387,9 +4384,9 @@ class Remote3IntegrationDriver extends IPSModuleStrict
     private function LoadImageAsBase64(): string
     {
         $path = __DIR__ . '/../libs/unfoldedcircle_logo.png';
-        $this->SendDebug(__FUNCTION__, $path, 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_FORM, $path, 0);
         if (!file_exists($path)) {
-            $this->SendDebug(__FUNCTION__, 'File not found: ' . $path, 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_FORM, 'File not found: ' . $path, 0);
             return '';
         }
         $imageData = file_get_contents($path);
@@ -4549,6 +4546,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
     public const TOPIC_AUTH = 'AUTH';
     public const TOPIC_HOOK = 'HOOK';
     public const TOPIC_WS = 'WS';
+    public const TOPIC_IO = 'IO';
     public const TOPIC_ENTITY = 'ENTITY';
     public const TOPIC_VM = 'VM';
     public const TOPIC_DISCOVERY = 'DISCOVERY';
