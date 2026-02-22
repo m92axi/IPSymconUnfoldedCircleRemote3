@@ -57,6 +57,25 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
         $this->RegisterAttributeString('vm_update_vars', '[]');
 
+        $this->RegisterPropertyString('device_popup', '[]');
+
+        $this->RegisterPropertyString('popup_button_suggestions', '[]');
+        $this->RegisterPropertyString('popup_climate_suggestions', '[]');
+        $this->RegisterPropertyString('popup_cover_suggestions', '[]');
+        $this->RegisterPropertyString('popup_light_suggestions', '[]');
+        $this->RegisterPropertyString('popup_media_suggestions', '[]');
+        $this->RegisterPropertyString('popup_remote_suggestions', '[]');
+        $this->RegisterPropertyString('popup_sensor_suggestions', '[]');
+        $this->RegisterPropertyString('popup_switch_suggestions', '[]');
+
+        $this->RegisterAttributeString('popup_button_suggestions', '[]');
+        $this->RegisterAttributeString('popup_climate_suggestions', '[]');
+        $this->RegisterAttributeString('popup_cover_suggestions', '[]');
+        $this->RegisterAttributeString('popup_light_suggestions', '[]');
+        $this->RegisterAttributeString('popup_media_suggestions', '[]');
+        $this->RegisterAttributeString('popup_remote_suggestions', '[]');
+        $this->RegisterAttributeString('popup_sensor_suggestions', '[]');
+        $this->RegisterAttributeString('popup_switch_suggestions', '[]');
 
         // Properties for Button and Switch mapping configuration
         $this->RegisterPropertyString('button_mapping', '[]');
@@ -4394,6 +4413,267 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         return 'data:image/png;base64,' . $base64;
     }
 
+    /**
+     * Loads suggestions for the device search popup.
+     * First step: fill the Button (Script) list with all scripts from the Symcon object tree.
+     */
+    public function LoadDeviceSearchSuggestions(): void
+    {
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '🔍 Loading device search suggestions (buttons + lights)', 0);
+
+        // Step 1: Buttons (Scripts)
+        $rows = $this->BuildButtonScriptSuggestions();
+        $this->UpdateFormField('popup_button_suggestions', 'values', json_encode($rows, JSON_UNESCAPED_SLASHES));
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '✅ Button script suggestions loaded: ' . count($rows), 0);
+
+        // Step 2: Lights (Instances)
+        $lightRows = $this->BuildLightSuggestions();
+        $this->UpdateFormField('popup_light_suggestions', 'values', json_encode($lightRows, JSON_UNESCAPED_SLASHES));
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '✅ Light suggestions loaded: ' . count($lightRows), 0);
+    }
+
+    /**
+     * Build suggestions list for "Button (Script)".
+     * A Remote "button" simply triggers a Symcon script.
+     *
+     * @return array[] Rows for the popup list.
+     */
+    private function BuildButtonScriptSuggestions(): array
+    {
+        $rows = [];
+
+        // Get all scripts
+        $scriptIDs = @IPS_GetScriptList();
+        if (!is_array($scriptIDs)) {
+            $scriptIDs = [];
+        }
+
+        foreach ($scriptIDs as $sid) {
+            if (!is_int($sid) || !@IPS_ScriptExists($sid)) {
+                continue;
+            }
+
+            $name = @IPS_GetName($sid);
+            $path = $this->GetObjectPath($sid);
+
+            $rows[] = [
+                'register' => false,
+                'label' => ($path !== '' ? ($path . ' → ') : '') . $name,
+                'name' => $name,
+                'script_id' => $sid
+            ];
+        }
+
+        // Sort by label for a stable UI
+        usort($rows, function ($a, $b) {
+            return strcmp((string)($a['label'] ?? ''), (string)($b['label'] ?? ''));
+        });
+
+        return $rows;
+    }
+
+    /**
+     * Build suggestions list for "Light" devices.
+     * Uses DeviceRegistry definitions (module GUID) to find matching instances.
+     * First iteration: only list instances; mapping happens later.
+     *
+     * @return array[] Rows for the popup list.
+     */
+    private function BuildLightSuggestions(): array
+    {
+        $rows = [];
+
+        if (!class_exists('DeviceRegistry')) {
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY, '⚠️ DeviceRegistry class not found – cannot build light suggestions', 0);
+            return $rows;
+        }
+
+        $devices = DeviceRegistry::getSupportedDevices();
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '🔎 Registry entries total: ' . (is_array($devices) ? count($devices) : 0), 0);
+        if (!is_array($devices)) {
+            return $rows;
+        }
+
+        foreach ($devices as $def) {
+            if (!is_array($def)) {
+                continue;
+            }
+            if (($def['device_type'] ?? '') !== 'light') {
+                continue;
+            }
+
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '💡 Checking light registry entry: ' . json_encode($def), 0);
+
+            $moduleGuid = (string)($def['guid'] ?? '');
+            if ($moduleGuid === '') {
+                continue;
+            }
+
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '🔍 Searching instances for GUID: ' . $moduleGuid, 0);
+
+            $registryName = (string)($def['name'] ?? 'Light');
+            $manufacturer = (string)($def['manufacturer'] ?? '');
+            $tag = trim(($manufacturer !== '' ? ($manufacturer . ' ') : '') . $registryName);
+            if ($tag === '') {
+                $tag = 'Light';
+            }
+
+            // Find instances by module GUID
+            $instanceIDs = [];
+            try {
+                $instanceIDs = @IPS_GetInstanceListByModuleID($moduleGuid);
+            } catch (Throwable $e) {
+                $instanceIDs = [];
+            }
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '📦 Instances found for GUID ' . $moduleGuid . ': ' . (is_array($instanceIDs) ? count($instanceIDs) : 0), 0);
+            if (!is_array($instanceIDs) || empty($instanceIDs)) {
+                continue;
+            }
+
+            foreach ($instanceIDs as $iid) {
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '➡️ Evaluating instance ID: ' . $iid, 0);
+                if (!is_int($iid) || !@IPS_InstanceExists($iid)) {
+                    continue;
+                }
+
+                $instName = (string)@IPS_GetName($iid);
+                $path = $this->GetObjectPath($iid);
+
+                $label = ($path !== '' ? ($path . ' → ') : '') . $instName;
+                $label = '[' . $tag . '] ' . $label;
+
+                $rows[] = [
+                    'register' => false,
+                    'label' => $label,
+                    'name' => $instName,
+                    'instance_id' => $iid,
+                    'registry_name' => $registryName
+                ];
+            }
+        }
+
+        // Sort by label for a stable UI
+        usort($rows, function ($a, $b) {
+            return strcmp((string)($a['label'] ?? ''), (string)($b['label'] ?? ''));
+        });
+
+        return $rows;
+    }
+
+    /**
+     * Applies the selected suggestions from the device search popup to the instance configuration.
+     * Step 1: Only handle Button (Script) suggestions.
+     *
+     * @param mixed $popupButtonSuggestions Value from the popup list (array or JSON string)
+     */
+    public function ApplySuggestedDevices($popupButtonSuggestions = null): void
+    {
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '➕ Applying suggested devices (step 1: buttons)', 0);
+
+        // Normalize incoming list value
+        $rows = [];
+        if (is_string($popupButtonSuggestions) && trim($popupButtonSuggestions) !== '') {
+            $decoded = json_decode($popupButtonSuggestions, true);
+            if (is_array($decoded)) {
+                $rows = $decoded;
+            }
+        } elseif (is_array($popupButtonSuggestions)) {
+            $rows = $popupButtonSuggestions;
+        }
+
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '📥 Popup button rows received: ' . count($rows), 0);
+
+        // Filter selected
+        $selected = array_values(array_filter($rows, function ($r) {
+            return is_array($r) && !empty($r['register']);
+        }));
+
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '✅ Selected button rows: ' . count($selected), 0);
+        if (empty($selected)) {
+            return;
+        }
+
+        // Load existing mapping (property stores JSON array)
+        $existing = [];
+        try {
+            $existingRaw = (string)$this->ReadPropertyString('button_mapping');
+            $existingDecoded = json_decode($existingRaw, true);
+            if (is_array($existingDecoded)) {
+                $existing = $existingDecoded;
+            }
+        } catch (Throwable $e) {
+            $existing = [];
+        }
+
+        // Index existing script_ids to prevent duplicates
+        $existingScriptIds = [];
+        foreach ($existing as $e) {
+            if (is_array($e) && isset($e['script_id'])) {
+                $existingScriptIds[(int)$e['script_id']] = true;
+            }
+        }
+
+        $added = 0;
+        foreach ($selected as $s) {
+            $sid = isset($s['script_id']) ? (int)$s['script_id'] : 0;
+            if ($sid <= 0 || !@IPS_ScriptExists($sid)) {
+                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY, '⚠️ Skipping invalid script_id: ' . $sid, 0);
+                continue;
+            }
+            if (isset($existingScriptIds[$sid])) {
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, 'ℹ️ Script already mapped, skipping: ' . $sid, 0);
+                continue;
+            }
+
+            $name = (string)($s['name'] ?? 'Button');
+            if ($name === '') {
+                $name = (string)@IPS_GetName($sid);
+            }
+
+            $existing[] = [
+                'name' => $name,
+                'script_id' => $sid
+            ];
+            $existingScriptIds[$sid] = true;
+            $added++;
+        }
+
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '➕ Buttons added to mapping: ' . $added, 0);
+
+        // Update UI immediately
+        $this->UpdateFormField('button_mapping', 'values', json_encode($existing, JSON_UNESCAPED_SLASHES));
+
+        // Persist into property as well (user may forget to press Apply)
+        // This writes the property, but the user still needs to press Apply for ApplyChanges() to run.
+        $this->UpdateFormField('button_mapping', 'value', json_encode($existing, JSON_UNESCAPED_SLASHES));
+
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '✅ Button mapping updated in form (remember to press Apply)', 0);
+    }
+
+
+    /**
+     * Returns a readable path for an object id.
+     * Uses IPS_GetLocation if available.
+     */
+    private function GetObjectPath(int $objectId): string
+    {
+        $loc = '';
+        try {
+            $loc = (string)@IPS_GetLocation($objectId);
+        } catch (Throwable $e) {
+            $loc = '';
+        }
+
+        $loc = trim($loc);
+        // IPS_GetLocation often ends with a backslash; normalize
+        $loc = rtrim($loc, "\\ ");
+
+        // Normalize separators for display
+        $loc = str_replace('\\', ' → ', $loc);
+
+        return trim($loc);
+    }
+
     // -----------------------------
     // Expert Debug / Debug Filtering
     // -----------------------------
@@ -4546,6 +4826,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
     public const TOPIC_AUTH = 'AUTH';
     public const TOPIC_HOOK = 'HOOK';
     public const TOPIC_WS = 'WS';
+    public const TOPIC_DEVICE = 'DEVICE';
     public const TOPIC_IO = 'IO';
     public const TOPIC_ENTITY = 'ENTITY';
     public const TOPIC_VM = 'VM';
@@ -4685,7 +4966,9 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             ],
             [
                 'type' => 'PopupButton',
+                'name' => 'device_popup',
                 'caption' => '🔍 Search for Devices',
+                'onClick' => 'UCR_LoadDeviceSearchSuggestions($id);',
                 'popup' => [
                     'caption' => '🔍 Device Search',
                     'items' => [
@@ -4694,9 +4977,10 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                             'name' => 'popup_button_suggestions',
                             'caption' => '🔘 Button (Script)',
                             'columns' => [
-                                ['caption' => 'Register', 'name' => 'register', 'width' => '250px', 'add' => false, 'edit' => ['type' => 'CheckBox']],
-                                ['caption' => '📦 Object', 'name' => 'label', 'width' => 'auto'],
-                                ['caption' => 'Name', 'name' => 'name', 'width' => '200px', 'add' => '', 'edit' => ['type' => 'ValidationTextBox']],
+                                ['caption' => 'Register', 'name' => 'register', 'width' => '125px', 'add' => false, 'edit' => ['type' => 'CheckBox'], 'save' => true],
+                                ['caption' => '📦 Object', 'name' => 'label', 'width' => 'auto', 'save' => true],
+                                ['caption' => 'Name', 'name' => 'name', 'width' => '300px', 'add' => '', 'edit' => ['type' => 'ValidationTextBox'], 'save' => true],
+                                ['caption' => 'Script ID', 'name' => 'script_id', 'width' => '100px', 'visible' => false, 'save' => true],
                             ],
                             'add' => false,
                             'delete' => false,
@@ -4707,9 +4991,9 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                             'name' => 'popup_climate_suggestions',
                             'caption' => '🔥 Climate (Thermostat)',
                             'columns' => [
-                                ['caption' => 'Register', 'name' => 'register', 'width' => '250px', 'add' => false, 'edit' => ['type' => 'CheckBox']],
-                                ['caption' => '📦 Object', 'name' => 'label', 'width' => 'auto'],
-                                ['caption' => 'Name', 'name' => 'name', 'width' => '200px', 'add' => '', 'edit' => ['type' => 'ValidationTextBox']],
+                                ['caption' => 'Register', 'name' => 'register', 'width' => '140px', 'add' => false, 'edit' => ['type' => 'CheckBox']],
+                                ['caption' => '📦 Object', 'name' => 'label', 'width' => '200px'],
+                                ['caption' => 'Name', 'name' => 'name', 'width' => 'auto', 'add' => '', 'edit' => ['type' => 'ValidationTextBox']],
                             ],
                             'add' => false,
                             'delete' => false,
@@ -4720,9 +5004,9 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                             'name' => 'popup_cover_suggestions',
                             'caption' => '🪟 Cover (Roller Blind)',
                             'columns' => [
-                                ['caption' => 'Register', 'name' => 'register', 'width' => '250px', 'add' => false, 'edit' => ['type' => 'CheckBox']],
-                                ['caption' => '📦 Object', 'name' => 'label', 'width' => 'auto'],
-                                ['caption' => 'Name', 'name' => 'name', 'width' => '200px', 'add' => '', 'edit' => ['type' => 'ValidationTextBox']],
+                                ['caption' => 'Register', 'name' => 'register', 'width' => '140px', 'add' => false, 'edit' => ['type' => 'CheckBox']],
+                                ['caption' => '📦 Object', 'name' => 'label', 'width' => '200px'],
+                                ['caption' => 'Name', 'name' => 'name', 'width' => 'auto', 'add' => '', 'edit' => ['type' => 'ValidationTextBox']],
                             ],
                             'add' => false,
                             'delete' => false,
@@ -4733,9 +5017,11 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                             'name' => 'popup_light_suggestions',
                             'caption' => '💡 Light (Switch)',
                             'columns' => [
-                                ['caption' => 'Register', 'name' => 'register', 'width' => '250px', 'add' => false, 'edit' => ['type' => 'CheckBox']],
-                                ['caption' => '📦 Object', 'name' => 'label', 'width' => 'auto'],
-                                ['caption' => 'Name', 'name' => 'name', 'width' => '200px', 'add' => '', 'edit' => ['type' => 'ValidationTextBox']],
+                                ['caption' => 'Register', 'name' => 'register', 'width' => '125px', 'add' => false, 'edit' => ['type' => 'CheckBox'], 'save' => true],
+                                ['caption' => '📦 Object', 'name' => 'label', 'width' => 'auto', 'save' => true],
+                                ['caption' => 'Name', 'name' => 'name', 'width' => '300px', 'add' => '', 'edit' => ['type' => 'ValidationTextBox'], 'save' => true],
+                                ['caption' => 'Instance ID', 'name' => 'instance_id', 'width' => '100px', 'visible' => false, 'save' => true],
+                                ['caption' => 'Registry', 'name' => 'registry_name', 'width' => '100px', 'visible' => false, 'save' => true],
                             ],
                             'add' => false,
                             'delete' => false,
@@ -4746,9 +5032,9 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                             'name' => 'popup_media_suggestions',
                             'caption' => '🎵 Media Player',
                             'columns' => [
-                                ['caption' => 'Register', 'name' => 'register', 'width' => '250px', 'add' => false, 'edit' => ['type' => 'CheckBox']],
-                                ['caption' => '📦 Object', 'name' => 'label', 'width' => 'auto'],
-                                ['caption' => 'Name', 'name' => 'name', 'width' => '200px', 'add' => '', 'edit' => ['type' => 'ValidationTextBox']],
+                                ['caption' => 'Register', 'name' => 'register', 'width' => '140px', 'add' => false, 'edit' => ['type' => 'CheckBox']],
+                                ['caption' => '📦 Object', 'name' => 'label', 'width' => '200px'],
+                                ['caption' => 'Name', 'name' => 'name', 'width' => 'auto', 'add' => '', 'edit' => ['type' => 'ValidationTextBox']],
                             ],
                             'add' => false,
                             'delete' => false,
@@ -4759,9 +5045,9 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                             'name' => 'popup_remote_suggestions',
                             'caption' => '🎮 Remote Device',
                             'columns' => [
-                                ['caption' => 'Register', 'name' => 'register', 'width' => '250px', 'add' => false, 'edit' => ['type' => 'CheckBox']],
-                                ['caption' => '📦 Object', 'name' => 'label', 'width' => 'auto'],
-                                ['caption' => 'Name', 'name' => 'name', 'width' => '200px', 'add' => '', 'edit' => ['type' => 'ValidationTextBox']],
+                                ['caption' => 'Register', 'name' => 'register', 'width' => '140px', 'add' => false, 'edit' => ['type' => 'CheckBox']],
+                                ['caption' => '📦 Object', 'name' => 'label', 'width' => '200px'],
+                                ['caption' => 'Name', 'name' => 'name', 'width' => 'auto', 'add' => '', 'edit' => ['type' => 'ValidationTextBox']],
                             ],
                             'add' => false,
                             'delete' => false,
@@ -4772,9 +5058,9 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                             'name' => 'popup_sensor_suggestions',
                             'caption' => '📈 Sensor',
                             'columns' => [
-                                ['caption' => 'Register', 'name' => 'register', 'width' => '250px', 'add' => false, 'edit' => ['type' => 'CheckBox']],
-                                ['caption' => '📦 Object', 'name' => 'label', 'width' => 'auto'],
-                                ['caption' => 'Name', 'name' => 'name', 'width' => '200px', 'add' => '', 'edit' => ['type' => 'ValidationTextBox']],
+                                ['caption' => 'Register', 'name' => 'register', 'width' => '140px', 'add' => false, 'edit' => ['type' => 'CheckBox']],
+                                ['caption' => '📦 Object', 'name' => 'label', 'width' => '200px'],
+                                ['caption' => 'Name', 'name' => 'name', 'width' => 'auto', 'add' => '', 'edit' => ['type' => 'ValidationTextBox']],
                             ],
                             'add' => false,
                             'delete' => false,
@@ -4785,9 +5071,9 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                             'name' => 'popup_switch_suggestions',
                             'caption' => '💡 Switch (Binary)',
                             'columns' => [
-                                ['caption' => 'Register', 'name' => 'register', 'width' => '250px', 'add' => false, 'edit' => ['type' => 'CheckBox']],
-                                ['caption' => '📦 Object', 'name' => 'label', 'width' => 'auto'],
-                                ['caption' => 'Name', 'name' => 'name', 'width' => '200px', 'add' => '', 'edit' => ['type' => 'ValidationTextBox']],
+                                ['caption' => 'Register', 'name' => 'register', 'width' => '140px', 'add' => false, 'edit' => ['type' => 'CheckBox']],
+                                ['caption' => '📦 Object', 'name' => 'label', 'width' => '200px'],
+                                ['caption' => 'Name', 'name' => 'name', 'width' => 'auto', 'add' => '', 'edit' => ['type' => 'ValidationTextBox']],
                             ],
                             'add' => false,
                             'delete' => false,
@@ -4798,6 +5084,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                         [
                             'type' => 'Button',
                             'caption' => '➕ Add Devices',
+                            //'onClick' => 'UCR_ApplySuggestedDevices($id, $popup_button_suggestions);'
                             'onClick' => 'UCR_ApplySuggestedDevices($id);'
                         ]
                     ]
@@ -5425,7 +5712,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                     [
                         'type' => 'ValidationTextBox',
                         'name' => 'callback_IP',
-                        'caption' => 'Callback IP (IP of Symcon Server, only needed if automatic DNS name is not working)'
+                        'caption' => 'Callback IP (IP of Symcon Server, only needed if automatic DNS name is not working)',
                         'width' => '90%'
                     ],
                     [
@@ -5561,6 +5848,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         return $form;
     }
 }
+
 
 
 

@@ -6,10 +6,16 @@ class Remote3DockManager extends IPSModuleStrict
 {
     // Dock WebSocket API (UCD2/UCD3) defaults
     const DEFAULT_WS_PROTOCOL = 'ws://';
-    const DEFAULT_WS_PORT = 80; // 946 ?
+    const DEFAULT_WS_PORT = 80; // Dock 3
+    const DOCK2_WS_PORT = 946; // 946
+    const MODEL_DOCK3 = 'UCD3';
+    const MODEL_DOCK2 = 'UCD2';
 
-    // Most docks expose the API on the root path (no /ws). Keep as empty string.
-    const DEFAULT_WS_PATH = '/ws';
+    // WebSocket path differs by dock model:
+    // - Dock 3 (UCD3): /ws
+    // - Dock 2 (UCD2): root path (empty string)
+    const DEFAULT_WS_PATH = '/ws'; // Dock 3
+    const DOCK2_WS_PATH = '';
 
     // DataID for forwarding Dock data to child instances.
     // Must match Dock Manager `childRequirements` and Dock Child `implemented`.
@@ -132,6 +138,7 @@ class Remote3DockManager extends IPSModuleStrict
         $this->RegisterPropertyString('hostname', '');
         $this->RegisterPropertyInteger('core_instance_id', 0);
         $this->RegisterPropertyString('host', '');
+        $this->RegisterPropertyString('model', 'UCD3');
         $this->RegisterPropertyString('port', '');
         $this->RegisterPropertyString('https_port', '');
         $this->RegisterPropertyString('ws_path', self::DEFAULT_WS_PATH);
@@ -163,6 +170,39 @@ class Remote3DockManager extends IPSModuleStrict
 
         $host = $this->ReadPropertyString('host');
 
+        // Normalize WS settings depending on Dock model (keeps UI consistent and avoids confusion).
+        $model = trim($this->ReadPropertyString('model'));
+        if ($model === '') {
+            $model = self::MODEL_DOCK3;
+        }
+
+        // For Dock 2: ws://IP:946 (no path)
+        // For Dock 3: ws://IP/ws (default port 80 can be omitted)
+        $expectedWsPort = ($model === self::MODEL_DOCK2) ? (string)self::DOCK2_WS_PORT : (string)self::DEFAULT_WS_PORT;
+        $expectedWsPath = ($model === self::MODEL_DOCK2) ? self::DOCK2_WS_PATH : self::DEFAULT_WS_PATH;
+
+        $currentWsPort = (string)$this->ReadPropertyString('ws_port');
+        $currentWsPath = (string)$this->ReadPropertyString('ws_path');
+
+        // Only write properties when they differ to avoid ApplyChanges loops.
+        $needSync = false;
+        if (trim($currentWsPort) !== $expectedWsPort) {
+            $needSync = true;
+        }
+        if ((string)$currentWsPath !== (string)$expectedWsPath) {
+            $needSync = true;
+        }
+
+        if ($needSync) {
+            $this->SendDebug(__FUNCTION__, '🔧 Sync WS defaults for model=' . $model . ' (ws_port=' . $expectedWsPort . ', ws_path=' . json_encode($expectedWsPath) . ')', 0);
+            @IPS_SetProperty($this->InstanceID, 'ws_port', $expectedWsPort);
+            @IPS_SetProperty($this->InstanceID, 'ws_path', $expectedWsPath);
+
+            // Re-run ApplyChanges once with the corrected properties.
+            @IPS_ApplyChanges($this->InstanceID);
+            return;
+        }
+
         // If setup is incomplete, keep module inactive and do not touch parent configuration.
         if ($host === '') {
             $this->SendDebug(__FUNCTION__, '⏸️ Setup incomplete (Host missing) – waiting for user input.', 0);
@@ -171,6 +211,12 @@ class Remote3DockManager extends IPSModuleStrict
                 $this->ReloadForm();
             }
             return;
+        }
+
+        // Debug: log effective WS URL that will be used for the parent (model-aware)
+        $cfg = json_decode($this->GetConfigurationForParent(), true);
+        if (is_array($cfg) && isset($cfg['URL'])) {
+            $this->SendDebug(__FUNCTION__, '🧭 Effective WS URL (model=' . $model . '): ' . (string)$cfg['URL'], 0);
         }
 
         // Sync: if user changed the API key property, mirror it into the attribute used for sending/auth.
@@ -211,19 +257,51 @@ class Remote3DockManager extends IPSModuleStrict
 
     public function GetConfigurationForParent(): string
     {
-        $host = $this->ReadPropertyString('host');
-        $pass = $this->ReadAttributeString('api_key');
+        $host = trim($this->ReadPropertyString('host'));
+        $token = trim($this->ReadAttributeString('api_key'));
+
+        // Determine Dock model (set by discovery). Fallback to Dock 3.
+        $model = trim($this->ReadPropertyString('model'));
+        if ($model === '') {
+            $model = self::MODEL_DOCK3;
+        }
+
+        // Build WS URL depending on dock model.
+        // Forum confirmed:
+        // - Dock 2: ws://IP:946
+        // - Dock 3: ws://IP/ws
+        $urlHost = ($host !== '') ? $host : '127.0.0.1';
+
+        $protocol = self::DEFAULT_WS_PROTOCOL;
+        $url = '';
+
+        if ($model === self::MODEL_DOCK2) {
+            // Dock 2: explicit port, no /ws path
+            $url = $protocol . $urlHost . ':' . self::DOCK2_WS_PORT . self::DOCK2_WS_PATH;
+        } else {
+            // Dock 3: /ws path, default port (80) can be omitted in URL
+            $path = self::DEFAULT_WS_PATH;
+            if ($path === '') {
+                $path = '/ws';
+            }
+
+            // If a custom ws_port is configured and not default, include it.
+            $customPort = (int)trim($this->ReadPropertyString('ws_port'));
+            if ($customPort > 0 && $customPort !== self::DEFAULT_WS_PORT) {
+                $url = $protocol . $urlHost . ':' . $customPort . $path;
+            } else {
+                $url = $protocol . $urlHost . $path;
+            }
+        }
 
         // If setup is incomplete (host and/or token missing), still configure the WS client URL
         // with the best-known host so the parent does not show a misleading 127.0.0.1.
         // Authentication may happen later once the token becomes available.
-        if ($host === '' || $pass === '') {
-            $this->SendDebug(__FUNCTION__, '⏸️ WS configuration incomplete (Host/Token missing) – using best-known host for URL.', 0);
-
-            $urlHost = ($host !== '') ? $host : '127.0.0.1';
+        if ($host === '' || $token === '') {
+            $this->SendDebug(__FUNCTION__, '⏸️ WS configuration incomplete (Host/Token missing) – using model-based URL without headers.', 0);
 
             $config = [
-                'URL' => self::DEFAULT_WS_PROTOCOL . $urlHost . ':' . self::DEFAULT_WS_PORT . self::DEFAULT_WS_PATH,
+                'URL' => $url,
                 'VerifyCertificate' => false,
                 'Type' => 0,
                 'Headers' => json_encode([])
@@ -232,25 +310,15 @@ class Remote3DockManager extends IPSModuleStrict
             return json_encode($config);
         }
 
-        // Ensure we have a valid API key once host+pass are present.
+        // Ensure we have a valid API key once host+token are present.
         $apiKey = $this->ReadAttributeString('api_key');
         if ($apiKey === '') {
             $this->SendDebug(__FUNCTION__, '🔐 No API key yet – trying to create/validate API key…', 0);
             if (!$this->EnsureApiKey()) {
                 $this->SendDebug(__FUNCTION__, '⏸️ WS configuration postponed (API key not available).', 0);
 
-                $urlHost = ($host !== '') ? $host : '127.0.0.1';
-                $port = (int)$this->ReadPropertyString('ws_port');
-                if ($port <= 0) {
-                    $port = self::DEFAULT_WS_PORT;
-                }
-                $path = $this->ReadPropertyString('ws_path');
-                if ($path === '') {
-                    $path = self::DEFAULT_WS_PATH;
-                }
-
                 $config = [
-                    'URL' => self::DEFAULT_WS_PROTOCOL . $urlHost . ':' . self::DEFAULT_WS_PORT . self::DEFAULT_WS_PATH,
+                    'URL' => $url,
                     'VerifyCertificate' => false,
                     'Type' => 0,
                     'Headers' => json_encode([])
@@ -263,13 +331,13 @@ class Remote3DockManager extends IPSModuleStrict
 
         // Dock authenticates with an `auth` message, not via HTTP headers.
         $config = [
-            'URL' => self::DEFAULT_WS_PROTOCOL . $host . ':' . self::DEFAULT_WS_PORT . self::DEFAULT_WS_PATH,
+            'URL' => $url,
             'VerifyCertificate' => false,
             'Type' => 0,
             'Headers' => json_encode([])
         ];
 
-        $this->SendDebug(__FUNCTION__, '🧩 WS Configuration: ' . json_encode($config), 0);
+        $this->SendDebug(__FUNCTION__, '🧩 WS Configuration (model=' . $model . '): ' . json_encode($config), 0);
         return json_encode($config);
     }
 
@@ -966,6 +1034,15 @@ class Remote3DockManager extends IPSModuleStrict
         // Manual setup: allow entering host + websocket host
         if ($manualSetup) {
             $form[] = [
+                'type' => 'Select',
+                'name' => 'model',
+                'caption' => 'Model',
+                'options' => [
+                    ['caption' => 'Dock 3 (UCD3)', 'value' => self::MODEL_DOCK3],
+                    ['caption' => 'Dock 2 (UCD2)', 'value' => self::MODEL_DOCK2]
+                ]
+            ];
+            $form[] = [
                 'type' => 'ValidationTextBox',
                 'name' => 'host',
                 'caption' => 'Host (IP)',
@@ -984,7 +1061,7 @@ class Remote3DockManager extends IPSModuleStrict
                 'name' => 'api_key_display',
                 'caption' => 'API key',
                 'value' => $this->ReadAttributeString('api_key'),
-                'enabled' => false
+                'enabled' => true
             ];
             $form[] = [
                 'type' => 'ValidationTextBox',
@@ -1001,6 +1078,7 @@ class Remote3DockManager extends IPSModuleStrict
             ];
 
             $form[] = $ro('hostname', 'Hostname');
+            $form[] = $ro('model', 'Model');
             $form[] = [
                 'type' => 'ValidationTextBox',
                 'name' => 'host',
