@@ -72,7 +72,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
         // --- Expert Debug / Debug Filtering ---
         $this->RegisterPropertyBoolean('expert_debug', false);
-        $this->RegisterPropertyInteger('debug_level', 3); // 0=OFF,1=ERROR,2=WARN,3=INFO,4=TRACE
+        $this->RegisterPropertyInteger('debug_level', 4); // 0=BASIC,1=ERROR,2=WARN,3=INFO,4=TRACE
         $this->RegisterPropertyBoolean('debug_filter_enabled', false);
         $this->RegisterPropertyString('debug_topics', ''); // comma-separated topics; empty = all
         $this->RegisterPropertyString('debug_entity_ids', ''); // comma-separated entity ids
@@ -319,7 +319,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
     public function UpdateAllEntityStates(): void
     {
-        $this->SendDebugExtended(__FUNCTION__, '🔄 Starte zyklisches Update aller Entitätszustände...', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_ENTITY, '🔄 Starting periodic update of all entity states...', 0);
 
         $types = [
             'button' => 'button_mapping',
@@ -336,7 +336,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         foreach ($types as $type => $property) {
             $mapping = json_decode($this->ReadPropertyString($property), true);
             if (!is_array($mapping) || count($mapping) === 0) {
-                $this->SendDebugExtended(__FUNCTION__, "ℹ️ Keine Einträge für Typ '$type' vorhanden.", 0);
+                $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "ℹ️ No entries for type '$type'.", 0);
                 continue;
             }
 
@@ -414,7 +414,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                                 $attributes['current_temperature'] = @GetValue($entry['current_temp_var_id']);
                             }
 
-                            $this->SendDebugExtended(__FUNCTION__, '📤 Sende Entity für Climate: ' . json_encode($attributes), 0);
+                            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, '📤 Sending climate entity: ' . json_encode($attributes), 0);
                             $this->SendEntityChange('climate_' . $entry['instance_id'], 'climate', $attributes);
                         }
                         break;
@@ -467,19 +467,19 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
                     case 'media':
                         if (!isset($entry['features']) || !is_array($entry['features'])) {
-                            $this->SendDebugExtended(__FUNCTION__, "⚠️ Kein gültiges Feature-Array für Media-Player-Instanz: " . json_encode($entry), 0);
+                            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠️ Invalid feature array for media player entry: " . json_encode($entry), 0);
                             continue 2;
                         }
 
                         $attributes = [];
                         $instanceId = $entry['instance_id'] ?? 0;
                         if ($instanceId === 0) {
-                            $this->SendDebugExtended(__FUNCTION__, "⚠️ Kein instance_id gesetzt für Media-Entry: " . json_encode($entry), 0);
+                            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠️ Missing instance_id for media entry: " . json_encode($entry), 0);
                             continue 2;
                         }
 
                         $entityId = 'media_player_' . $instanceId;
-                        $this->SendDebugExtended(__FUNCTION__, "🎵 Verarbeite Media Player: $entityId", 0);
+                        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_ENTITY, "🎵 Processing media player: $entityId", 0);
 
                         $stateSet = false;
 
@@ -527,7 +527,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
                         if (!$stateSet) {
                             $attributes['state'] = 'ON'; // Fallback
-                            $this->SendDebugExtended(__FUNCTION__, "ℹ️ Kein Status-Feature vorhanden, setze 'state' auf ON", 0);
+                            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, "ℹ️ No state feature present, setting 'state' to ON", 0);
                         }
 
                         // $this->SendDebug(__FUNCTION__, "📤 Sende Entity für Media Player $entityId: " . json_encode($attributes), 0);
@@ -546,7 +546,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                         break;
 
                     default:
-                        $this->SendDebugExtended(__FUNCTION__, "⚠️ Unbekannter Entitätstyp: $type", 0);
+                        $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_ENTITY, "⚠️ Unknown entity type: $type", 0);
                         continue 2;
                 }
             }
@@ -662,13 +662,13 @@ class Remote3IntegrationDriver extends IPSModuleStrict
     public function ReceiveData(string $JSONString): string
     {
         // Always show at least a small trace that something arrived
-        $this->SendDebug(__FUNCTION__, '📥 Incoming (raw length): ' . strlen($JSONString), 0);
-        $this->SendDebugExtended(__FUNCTION__, '📥 Raw Data: ' . $JSONString, 0);
+        $this->Debug(__FUNCTION__, self::LV_BASIC, self::TOPIC_WS, '📥 Incoming (raw length): ' . strlen($JSONString), 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, '📥 Raw Data: ' . $JSONString, 0);
 
         $data = json_decode($JSONString, true);
         if (!is_array($data)) {
-            $this->SendDebug(__FUNCTION__, '❌ JSON decode failed: ' . json_last_error_msg(), 0);
-            $this->SendDebugExtended(__FUNCTION__, '📥 Original JSON string: ' . $JSONString, 0);
+            $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_WS, '❌ JSON decode failed: ' . json_last_error_msg(), 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, '📥 Original JSON string: ' . $JSONString, 0);
             return '';
         }
 
@@ -677,8 +677,8 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $type = (int)($data['Type'] ?? -1);
 
         if (!isset($data['Buffer'])) {
-            $this->SendDebug(__FUNCTION__, '❌ Missing Buffer in incoming data.', 0);
-            $this->SendDebugExtended(__FUNCTION__, '📥 Incoming object: ' . json_encode($data), 0);
+            $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_WS, '❌ Missing Buffer in incoming data.', 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, '📥 Incoming object: ' . json_encode($data), 0);
             return '';
         }
 
@@ -690,7 +690,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             $decoded = @hex2bin($buffer);
             if ($decoded !== false) {
                 $buffer = $decoded;
-                $this->SendDebugExtended(__FUNCTION__, '🔁 Buffer was HEX → decoded to bytes (len=' . strlen($buffer) . ')', 0);
+                $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, '🔁 Buffer was HEX → decoded to bytes (len=' . strlen($buffer) . ')', 0);
             }
         }
 
@@ -704,18 +704,18 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             self::Socket_Disconnected => 'Disconnected',
             default => 'Unknown(' . $type . ')'
         };
-        $this->SendDebug(__FUNCTION__, "📡 Socket Type: {$typeLabel} | From: {$clientIP}:{$clientPort} | PayloadLen: " . strlen($payload), 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_WS, "📡 Socket Type: {$typeLabel} | From: {$clientIP}:{$clientPort} | PayloadLen: " . strlen($payload), 0);
 
         // Token aus Header extrahieren
         $token = null;
         if (preg_match('/auth-token:\s*(.+)/i', $payload, $matches)) {
             $token = trim($matches[1]);
-            $this->SendDebug(__FUNCTION__, "🔑 Auth-Token aus Header extrahiert: $token", 0);
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_AUTH, "🔑 Auth token extracted from header: $token", 0);
         }
 
         // Direkt nach Header-Token-Erkennung authentifizieren
         if (!empty($token)) {
-            $this->SendDebug(__FUNCTION__, '✅ Authentifizierung direkt nach Header-Token-Erkennung', 0);
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_AUTH, '✅ Authenticating immediately after header token detection', 0);
             $this->authenticateClient($clientIP, $clientPort, $token);
         }
 
@@ -727,84 +727,83 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             }
             if (is_array($payloadJson) && isset($payloadJson['auth-token'])) {
                 $token = (string)$payloadJson['auth-token'];
-                $this->SendDebug(__FUNCTION__, "🔑 Auth-Token aus JSON-Message extrahiert: $token", 0);
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_AUTH, "🔑 Auth token extracted from JSON message: $token", 0);
             }
         }
 
         // Client direkt nach Empfang registrieren (track by IP and update port/last_seen)
         $this->addOrUpdateClientSession($clientIP, $clientPort);
 
-        $this->SendDebugExtended(__FUNCTION__, '✅ Payload-Länge: ' . strlen($payload), 0);
-        $this->SendDebugExtended(__FUNCTION__, '✅ Client-IP: ' . $clientIP . ' | Port: ' . $clientPort, 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, '✅ Payload length: ' . strlen($payload), 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, '✅ Client: ' . $clientIP . ' | Port: ' . $clientPort, 0);
         // $this->SendDebug(__FUNCTION__, print_r($_SERVER, true), 0);
 
         switch ($type) {
             case self::Socket_Data: // Data
-                $this->SendDebugExtended(__FUNCTION__, "🟢 WebSocket Type: Data", 0);
+                $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, "🟢 WebSocket Type: Data", 0);
                 break;
             case self::Socket_Connected: // Connected
-                $this->SendDebugExtended(__FUNCTION__, "🟢 WebSocket Type: Connected", 0);
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_WS, "🟢 WebSocket Type: Connected", 0);
                 break;
             case self::Socket_Disconnected: // Disconnected
-                $this->SendDebugExtended(__FUNCTION__, "🟠 WebSocket Type: Disconnected", 0);
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_WS, "🟠 WebSocket Type: Disconnected", 0);
                 break;
             default:
-                $this->SendDebugExtended(__FUNCTION__, "⚠️ WebSocket Type: Unbekannt ($type)", 0);
+                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_WS, "⚠️ WebSocket Type: Unknown ($type)", 0);
                 break;
         }
 
         // Prüfen, ob es sich um ein WebSocket-Upgrade handelt
         if ($this->PerformWebSocketHandshake($payload, $clientIP, $clientPort)) {
-            $this->SendDebug(__FUNCTION__, '✅ Handshake erkannt und ausgeführt → Abbruch', 0);
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_WS, '✅ Handshake detected and performed → abort processing', 0);
             return '';
         }
 
         // WebSocket Payload extrahieren und verarbeiten
         $unpacked = WebSocketUtils::UnpackData($payload, function ($msg, $data) {
-            $this->SendDebugExtended($msg, $data, 0);
+            $this->Debug((string)$msg, self::LV_TRACE, self::TOPIC_WS, $data, 0);
         });
         if ($unpacked === null) {
-            $this->SendDebugExtended(__FUNCTION__, '❌ UnpackData() hat null zurückgegeben', 0);
+            $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_WS, '❌ UnpackData() returned null', 0);
             return '';
         }
 
         if ($unpacked['opcode'] === 0x9) {
             $now = date('Y-m-d H:i:s');
-            $this->SendDebugExtended(__FUNCTION__, "🔁 [$now] PING empfangen von $clientIP:$clientPort", 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, "🔁 [$now] PING received from $clientIP:$clientPort", 0);
             $pong = WebSocketUtils::PackPong();
-            // $this->SendDebug(__FUNCTION__, '📤 PONG (hex): ' . bin2hex($pong), 0);
-            // $this->SendDebug(__FUNCTION__, "📤 [$now] Sende echten PONG-Frame an $clientIP:$clientPort", 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, "📤 [$now] Sende echten PONG-Frame an $clientIP:$clientPort", 0);
             $this->PushPongToRemoteClient($pong, $clientIP, $clientPort);
             return '';
         }
 
         // Einzelne Debug-Ausgaben für jedes entpackte Feld
-        $this->SendDebugExtended(__FUNCTION__, '📦 FIN: ' . var_export($unpacked['fin'], true), 0);
-        $this->SendDebugExtended(__FUNCTION__, '📦 Opcode: ' . $unpacked['opcode'], 0);
-        $this->SendDebugExtended(__FUNCTION__, '📦 Opcode Name: ' . $unpacked['opcode_name'], 0);
-        $this->SendDebugExtended(__FUNCTION__, '📦 Raw Length: ' . $unpacked['length'], 0);
-        $this->SendDebugExtended(__FUNCTION__, '📦 Raw Frame (hex): ' . bin2hex($unpacked['raw']), 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, '📦 FIN: ' . var_export($unpacked['fin'], true), 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, '📦 Opcode: ' . $unpacked['opcode'], 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, '📦 Opcode Name: ' . $unpacked['opcode_name'], 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, '📦 Raw Length: ' . $unpacked['length'], 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, '📦 Raw Frame (hex): ' . bin2hex($unpacked['raw']), 0);
         // WebSocket payload is bytes; JSON must be UTF-8. Do not re-encode raw bytes.
         $jsonText = (string)$unpacked['payload'];
         if ($jsonText !== '' && !mb_check_encoding($jsonText, 'UTF-8')) {
-            $this->SendDebugExtended(__FUNCTION__, '❌ Payload is not valid UTF-8 – skipping JSON decode (len=' . strlen($jsonText) . ')', 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_WS, '❌ Payload is not valid UTF-8 – skipping JSON decode (len=' . strlen($jsonText) . ')', 0);
             return '';
         }
 
-        $this->SendDebugExtended(__FUNCTION__, '📦 Demaskierter Payload (Klartext): ' . $jsonText, 0);
-        $this->SendDebugExtended(__FUNCTION__, '✅ Frame wurde erfolgreich entpackt', 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, '📦 Demaskierter Payload (Klartext): ' . $jsonText, 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, '✅ Frame wurde erfolgreich entpackt', 0);
 
         $json = json_decode($jsonText, true);
         if (!is_array($json)) {
-            $this->SendDebugExtended(__FUNCTION__, '❌ Ungültiger JSON Payload im Frame', 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_WS, '❌ Invalid JSON payload in frame', 0);
             return '';
         }
 
-        $this->SendDebug(__FUNCTION__, '📥 Entpackter Frame: ' . json_encode($json), 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, '📥 Unpacked frame: ' . json_encode($json), 0);
 
         // --- ADDED LOGIC FOR "kind" inspection and event handling ---
         $kind = $json['kind'] ?? '';
-        $this->SendDebug(__FUNCTION__, "🧩 Kind: $kind", 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, "🧩 Kind: $kind", 0);
 
         if ($kind === 'event') {
             $this->HandleEventMessage($json, $clientIP, $clientPort);
@@ -813,7 +812,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
         $msg = $json['msg'] ?? '';
         $reqId = $json['id'] ?? 0;
-        $this->SendDebug(__FUNCTION__, "🧩 Message: $msg", 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, "🧩 Message: $msg", 0);
         switch ($msg) {
             case 'authentication':
                 $token = $json['msg_data']['token'] ?? null;
@@ -821,7 +820,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 break;
 
             case 'setup_driver':
-                $this->SendDebug(__FUNCTION__, '🛠️ Setup-Start empfangen', 0);
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_AUTH, '🛠️ Setup start received', 0);
                 $this->SendResultOK($reqId, $clientIP, $clientPort);
                 $this->NotifyDriverSetupComplete($clientIP, $clientPort);
                 break;
@@ -831,7 +830,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 break;
 
             case 'connect':
-                $this->SendDebug(__FUNCTION__, '🔌 Verbindung erkannt – sende device_state CONNECTED', 0);
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_WS, '🔌 Connect received – sending device_state CONNECTED', 0);
                 $this->SendDeviceState('CONNECTED', $clientIP, $clientPort);
                 break;
 
@@ -864,7 +863,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 break;
 
             default:
-                $this->SendDebug(__FUNCTION__, '⚠️ Unbekannte Anfrage: ' . $msg, 0);
+                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_WS, '⚠️ Unknown request: ' . $msg, 0);
                 break;
         }
         return '';
@@ -4409,10 +4408,10 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
     private function DebugFilterMatches(string $message, $data, string $topic, int $level): bool
     {
-        // Level gate
+        // Level gate is ALWAYS applied
         $cfgLevel = (int)$this->ReadPropertyInteger('debug_level');
-        if ($cfgLevel <= 0) {
-            return false;
+        if ($cfgLevel < self::LV_BASIC) {
+            $cfgLevel = self::LV_BASIC;
         }
         if ($level > $cfgLevel) {
             return false;
@@ -4428,8 +4427,14 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             }
         }
 
-        // If filter not enabled, allow
+        // If filters are disabled, we're done (after level/topic gating)
         if (!(bool)$this->ReadPropertyBoolean('debug_filter_enabled')) {
+            return true;
+        }
+
+        // BASIC is always visible, even when filters are enabled.
+        // (Level/topic selection still applies above.)
+        if ($level === self::LV_BASIC) {
             return true;
         }
 
@@ -4522,99 +4527,97 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         return true;
     }
 
+    // -----------------------------
+    // Debug Levels (lowest = BASIC)
+    // -----------------------------
+    public const LV_BASIC = 1;
+    public const LV_ERROR = 2;
+    public const LV_WARN = 3;
+    public const LV_INFO = 4;
+    public const LV_TRACE = 5;
+
+    // -----------------------------
+    // Debug Topics
+    // -----------------------------
+    public const TOPIC_GEN = 'GEN';
+    public const TOPIC_AUTH = 'AUTH';
+    public const TOPIC_HOOK = 'HOOK';
+    public const TOPIC_WS = 'WS';
+    public const TOPIC_ENTITY = 'ENTITY';
+    public const TOPIC_VM = 'VM';
+    public const TOPIC_DISCOVERY = 'DISCOVERY';
+    public const TOPIC_API = 'API';
+    public const TOPIC_FORM = 'FORM';
+    public const TOPIC_EXT = 'EXT';
+
     /**
-     * Custom SendDebug implementation with filtering and throttling.
-     * Temporarily disabled to restore original IPSModuleStrict::SendDebug() behavior.
-     * Use SendDebugFiltered() for filtered debug output instead.
+     * Structured debug output with topic/level filtering and throttling.
+     * Lowest level is BASIC (1). There is no OFF level.
      */
-    public function SendDebugFiltered($Message, $Data, $Format): bool
+    public function Debug(string $Message, int $Level, string $Topic, $Data, int $Format = 0): bool
     {
-        // If expert debug is OFF: keep old behavior, but allow debug_level=0 to silence.
+        // If expert debug is OFF: classic behavior, but respect debug_level threshold.
         if (!(bool)$this->ReadPropertyBoolean('expert_debug')) {
-            if ((int)$this->ReadPropertyInteger('debug_level') <= 0) {
+            $cfgLevel = (int)$this->ReadPropertyInteger('debug_level');
+            if ($cfgLevel < self::LV_BASIC) {
+                $cfgLevel = self::LV_BASIC;
+            }
+            if ($Level > $cfgLevel) {
                 return false;
             }
-            // Ensure Data is string for IPSModuleStrict compatibility
-            if (is_string($Data)) {
-                $dataOut = $Data;
-            } elseif (is_scalar($Data)) {
-                $dataOut = (string)$Data;
-            } else {
-                $dataOut = json_encode($Data, JSON_UNESCAPED_SLASHES);
-            }
-            return parent::SendDebug($Message, $dataOut, $Format);
+            return parent::SendDebug($Message, $this->DebugDataToString($Data), $Format);
         }
 
-        // Determine topic+level heuristically
-        $msgStr = is_string($Message) ? $Message : (string)$Message;
-        $topic = 'GEN';
-        $level = 3; // INFO
-
-        // Optional: allow prefix: [TOPIC] ...
-        if (preg_match('/^\\[(?<topic>[A-Z0-9_\\-]+)\\]\\s*(?<rest>.*)$/', $msgStr, $m)) {
-            $topic = strtoupper($m['topic']);
-            $msgStr = $m['rest'];
+        // Expert debug: apply topic + filters + throttle
+        $topicUpper = strtoupper(trim($Topic));
+        if ($topicUpper === '') {
+            $topicUpper = self::TOPIC_GEN;
         }
 
-        // Rough level inference
-        if (is_string($Data)) {
-            if (str_starts_with($Data, '❌') || stripos($Data, 'error') !== false) {
-                $level = 1; // ERROR
-            } elseif (str_starts_with($Data, '⚠️') || stripos($Data, 'warn') !== false) {
-                $level = 2; // WARN
-            } elseif (
-                str_starts_with($Data, '🔁') || str_starts_with($Data, '📦') ||
-                str_starts_with($Data, '📥') || str_starts_with($Data, '📤')
-            ) {
-                $level = 4; // TRACE
-            }
-        }
-
-        // Filter + throttle
-        $filterMessage = is_string($Message) ? $Message : (string)$Message;
-        if (!$this->DebugFilterMatches($filterMessage, $Data, $topic, $level)) {
+        if (!$this->DebugFilterMatches($Message, $Data, $topicUpper, $Level)) {
             return false;
         }
 
-        $thKey = $topic . '|' . $filterMessage . '|' . (is_scalar($Data) ? (string)$Data : json_encode($Data));
+        $thKey = $topicUpper . '|' . $Level . '|' . $Message . '|' . $this->DebugDataToString($Data);
         if (!$this->DebugThrottleAllow($thKey)) {
             return false;
         }
 
-        // Ensure Data is string for IPSModuleStrict compatibility
-        if (is_string($Data)) {
-            $dataOut = $Data;
-        } elseif (is_scalar($Data)) {
-            $dataOut = (string)$Data;
-        } else {
-            $dataOut = json_encode($Data, JSON_UNESCAPED_SLASHES);
-        }
+        // Make topic+level visible in the debug list (left column)
+        $lvl = $this->DebugLevelToShortName($Level);
+        $msgOut = '[' . $topicUpper . '|' . $lvl . '] ' . $Message;
 
-        return parent::SendDebug($Message, $dataOut, $Format);
+        return parent::SendDebug($msgOut, $this->DebugDataToString($Data), $Format);
+    }
+
+    private function DebugLevelToShortName(int $level): string
+    {
+        return match ($level) {
+            self::LV_BASIC => 'BASIC',
+            self::LV_ERROR => 'ERROR',
+            self::LV_WARN => 'WARN',
+            self::LV_INFO => 'INFO',
+            self::LV_TRACE => 'TRACE',
+            default => (string)$level
+        };
+    }
+
+    private function DebugDataToString($Data): string
+    {
+        if (is_string($Data)) {
+            return $Data;
+        }
+        if (is_scalar($Data)) {
+            return (string)$Data;
+        }
+        $json = json_encode($Data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        return $json === false ? '[unserializable]' : $json;
     }
 
     private function SendDebugExtended($Message, $Data, $Format = 0): void
     {
-        // Wenn Experten-Debug nicht aktiv ist, lasse dein bisheriges Verhalten bestehen.
-        if (!(bool)$this->ReadPropertyBoolean('expert_debug')) {
-            // Falls du hier bislang auf eine Property/Attribute wie extended_debug prüfst, lass das so.
-            parent::SendDebug($Message, $Data, $Format);
-            return;
-        }
-
-        // Experten-Debug: Extended immer als TRACE, Topic EXT
         $msg = is_string($Message) ? $Message : (string)$Message;
-
-        if (!$this->DebugFilterMatches($msg, $Data, 'EXT', 4)) {
-            return;
-        }
-
-        $thKey = 'EXT|' . $msg . '|' . (is_scalar($Data) ? (string)$Data : json_encode($Data));
-        if (!$this->DebugThrottleAllow($thKey)) {
-            return;
-        }
-
-        parent::SendDebug($Message, $Data, $Format);
+        $this->Debug($msg, self::LV_TRACE, self::TOPIC_EXT, $Data, (int)$Format);
     }
 
     /**
@@ -4623,21 +4626,19 @@ class Remote3IntegrationDriver extends IPSModuleStrict
      */
     public function TestFilteredDebug(): void
     {
-        $this->SendDebugFiltered('[TEST] Basic INFO message', 'ℹ️ Test info output', 0);
+        $this->Debug(__FUNCTION__, self::LV_BASIC, self::TOPIC_GEN, '🧪 BASIC test output', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_WS, '📤 Simulated transmit to 192.168.0.50:12345', 0);
 
-        $this->SendDebugFiltered('[WS_TX] Simulated transmit', '📤 Sending sample payload to 192.168.0.50:12345', 0);
-
-        $this->SendDebugFiltered('[ENTITY] Simulated entity change', [
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_ENTITY, [
             'entity_id' => 'sensor_12345',
             'value' => 42,
             'unit' => '°C'
         ], 0);
 
-        $this->SendDebugFiltered('[ERROR] Simulated error case', '❌ Something went wrong', 0);
+        $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_AUTH, '❌ Simulated auth error', 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_VM, '🔁 High frequency event simulation', 0);
 
-        $this->SendDebugFiltered('[TRACE] High frequency event', '🔁 Repeating event simulation', 0);
-
-        parent::SendDebug(__FUNCTION__, '✅ TestFilteredDebug executed', 0);
+        $this->SendDebug(__FUNCTION__, '✅ TestFilteredDebug executed', 0);
     }
 
     /**
@@ -5432,7 +5433,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             [
                 'type' => 'CheckBox',
                 'name' => 'expert_debug',
-                'caption' => '🧪 Experten-Debug'
+                'caption' => '🧪 Expert Debug'
             ]
         ];
 
@@ -5444,29 +5445,30 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 'items' => [
                     [
                         'type' => 'Label',
-                        'caption' => 'Aktiviere Filter, um Debug-Ausgaben auf bestimmte Entities/IDs/IPs zu reduzieren. Topics z.B.: WS_RX, WS_TX, ENTITY, SENSOR, AUTH.'
+                        'caption' => 'Use filters to reduce debug output to specific entities/IDs/IPs. Example topics: WS, HOOK, ENTITY, VM, AUTH.'
                     ],
                     [
                         'type' => 'Select',
                         'name' => 'debug_level',
-                        'caption' => 'Debug Level',
+                        'caption' => 'Minimum debug level',
                         'options' => [
-                            ['caption' => '0 OFF', 'value' => 0],
-                            ['caption' => '1 ERROR', 'value' => 1],
-                            ['caption' => '2 WARN', 'value' => 2],
-                            ['caption' => '3 INFO', 'value' => 3],
-                            ['caption' => '4 TRACE', 'value' => 4]
+                            ['caption' => 'BASIC', 'value' => self::LV_BASIC],
+                            ['caption' => 'ERROR', 'value' => self::LV_ERROR],
+                            ['caption' => 'WARN', 'value' => self::LV_WARN],
+                            ['caption' => 'INFO', 'value' => self::LV_INFO],
+                            ['caption' => 'TRACE', 'value' => self::LV_TRACE],
                         ]
                     ],
                     [
                         'type' => 'CheckBox',
                         'name' => 'debug_filter_enabled',
-                        'caption' => 'Filter aktivieren'
+                        'caption' => 'Enable filters'
                     ],
+                    // Available topics: GEN, AUTH, HOOK, WS, ENTITY, VM, DISCOVERY, API, FORM, EXT
                     [
                         'type' => 'ValidationTextBox',
                         'name' => 'debug_topics',
-                        'caption' => 'Topics (CSV, leer = alle)'
+                        'caption' => 'Topics (CSV, empty = all)'
                     ],
                     [
                         'type' => 'ValidationTextBox',
@@ -5486,22 +5488,22 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                     [
                         'type' => 'ValidationTextBox',
                         'name' => 'debug_text_filter',
-                        'caption' => 'Textfilter (Substring oder Regex)'
+                        'caption' => 'Text filter (substring or regex)'
                     ],
                     [
                         'type' => 'CheckBox',
                         'name' => 'debug_text_is_regex',
-                        'caption' => 'Textfilter ist Regex'
+                        'caption' => 'Text filter is regex'
                     ],
                     [
                         'type' => 'CheckBox',
                         'name' => 'debug_strict_match',
-                        'caption' => 'Nur Treffer loggen (strict)'
+                        'caption' => 'Log matches only (strict)'
                     ],
                     [
                         'type' => 'NumberSpinner',
                         'name' => 'debug_throttle_ms',
-                        'caption' => 'Throttle (ms, 0=aus)',
+                        'caption' => 'Throttle (ms, 0=off)',
                         'minimum' => 0,
                         'maximum' => 60000
                     ]
