@@ -26,7 +26,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
     const Socket_Data = 0;
     const Socket_Connected = 1;
     const Socket_Disconnected = 2;
-    const Unfolded_Circle_Driver_Version = "0.2.0";
+    const Unfolded_Circle_Driver_Version = "0.5.0";
     const Unfolded_Circle_API_Version = "0.12.1";
 
     const Unfolded_Circle_API_Minimum_Version = "0.12.1";
@@ -59,6 +59,8 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
         $this->RegisterPropertyString('device_popup', '[]');
 
+        // use Attributes instead
+        /*
         $this->RegisterPropertyString('popup_button_suggestions', '[]');
         $this->RegisterPropertyString('popup_climate_suggestions', '[]');
         $this->RegisterPropertyString('popup_cover_suggestions', '[]');
@@ -67,6 +69,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $this->RegisterPropertyString('popup_remote_suggestions', '[]');
         $this->RegisterPropertyString('popup_sensor_suggestions', '[]');
         $this->RegisterPropertyString('popup_switch_suggestions', '[]');
+        */
 
         $this->RegisterAttributeString('popup_button_suggestions', '[]');
         $this->RegisterAttributeString('popup_climate_suggestions', '[]');
@@ -101,6 +104,9 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $this->RegisterPropertyBoolean('debug_text_is_regex', false);
         $this->RegisterPropertyBoolean('debug_strict_match', true); // require match when any filter is set
         $this->RegisterPropertyInteger('debug_throttle_ms', 0); // 0 disables throttling
+        $this->RegisterPropertyString('debug_topics_cfg', '');
+        $this->RegisterPropertyString('debug_filter_instances', '');
+        $this->RegisterPropertyString('debug_client_ips_cfg', '');
 
         // Properties for expert settings
         $this->RegisterPropertyBoolean('extended_debug', false);
@@ -148,6 +154,36 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         if ($parentID > 0) {
             $this->RegisterMessage($parentID, IM_CHANGESTATUS);
         }
+    }
+
+    private function GetModuleLibraryVersion(): string
+    {
+        // module.php liegt in: <moduleRoot>/<ModuleName>/module.php
+        // library.json liegt in: <moduleRoot>/library.json
+        $libraryPath = __DIR__ . '/../library.json';
+
+        if (!is_file($libraryPath)) {
+            return self::Unfolded_Circle_Driver_Version; // Fallback
+        }
+
+        $raw = @file_get_contents($libraryPath);
+        if ($raw === false) {
+            return self::Unfolded_Circle_Driver_Version; // Fallback
+        }
+
+        $json = json_decode($raw, true);
+        if (!is_array($json) || empty($json['version'])) {
+            return self::Unfolded_Circle_Driver_Version; // Fallback
+        }
+
+        $v = trim((string)$json['version']);
+
+        // Optional: "0.5" → "0.5.0" (SemVer-Alignment)
+        if (preg_match('/^\d+\.\d+$/', $v)) {
+            $v .= '.0';
+        }
+
+        return $v;
     }
 
     /**
@@ -680,7 +716,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
     public function ReceiveData(string $JSONString): string
     {
         // Always show at least a small trace that something arrived
-        $this->Debug(__FUNCTION__, self::LV_BASIC, self::TOPIC_WS, '📥 Incoming (raw length): ' . strlen($JSONString), 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, '📥 Incoming (raw length): ' . strlen($JSONString), 0);
         $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, '📥 Raw Data: ' . $JSONString, 0);
 
         $data = json_decode($JSONString, true);
@@ -722,7 +758,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             self::Socket_Disconnected => 'Disconnected',
             default => 'Unknown(' . $type . ')'
         };
-        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_WS, "📡 Socket Type: {$typeLabel} | From: {$clientIP}:{$clientPort} | PayloadLen: " . strlen($payload), 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, "📡 Socket Type: {$typeLabel} | From: {$clientIP}:{$clientPort} | PayloadLen: " . strlen($payload), 0);
 
         // Token aus Header extrahieren
         $token = null;
@@ -1150,7 +1186,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             'msg_data' => [
                 'driver_id' => 'uc_symcon_driver',
                 'auth_method' => "HEADER",
-                'version' => self::Unfolded_Circle_Driver_Version,
+                'version' => $this->GetModuleLibraryVersion(),
                 'min_core_api' => self::Unfolded_Circle_API_Minimum_Version,
                 'name' => [
                     'fr' => 'Symcon (Symcon de ' . $first . ')',
@@ -1975,7 +2011,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 'name' => 'Symcon Integration Driver',
                 'version' => [
                     'api' => self::Unfolded_Circle_API_Version,
-                    'driver' => self::Unfolded_Circle_Driver_Version
+                    'driver' => $this->GetModuleLibraryVersion()
                 ]
             ]
         ];
@@ -2164,7 +2200,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             'TXTRecords' => [
                 // Keep TXT minimal and stable. User can still edit it in the DNS-SD instance UI if desired.
                 ['Value' => 'name=Symcon von ' . $first],
-                ['Value' => 'ver=' . self::Unfolded_Circle_Driver_Version],
+                ['Value' => 'ver=' . $this->GetModuleLibraryVersion()],
                 ['Value' => 'developer=Fonzo'],
                 ['Value' => 'pwd=true']
             ]
@@ -4265,41 +4301,128 @@ class Remote3IntegrationDriver extends IPSModuleStrict
     }
 
     /**
-     * Liefert die var_id für ein Feature, z. B. "volume", aus einer Instanz anhand der bekannten Zuordnung.
+     * Resolves a Symcon variable ID for a given feature key within an instance.
+     *
+     * Strategy:
+     * - Look up the instance module GUID and fetch its DeviceRegistry definition.
+     * - Use the registry's `attributes` map to translate UC attributes to Symcon Idents.
+     * - For media_player features: map feature -> required attributes via Entity_Media_Player::featureToAttributes()
+     *   (fallback: treat featureKey itself as an attribute key).
+     * - For lights: keep backward compatible mapping (on_off/dim/color/color_temperature).
      */
     private function ResolveFeatureVarID(int $instanceID, string $featureKey): ?int
     {
-        $instance = IPS_GetInstance($instanceID);
-        $guid = $instance['ModuleInfo']['ModuleID'];
+        if ($instanceID <= 0 || !@IPS_InstanceExists($instanceID)) {
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY, "❌ Instance $instanceID does not exist", 0);
+            return null;
+        }
 
-        // DeviceRegistry-Mapping abrufen
+        $instance = IPS_GetInstance($instanceID);
+        $guid = (string)($instance['ModuleInfo']['ModuleID'] ?? '');
+
+        // DeviceRegistry mapping
         if (!class_exists('DeviceRegistry')) {
             $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_DISCOVERY, '❌ DeviceRegistry class not found', 0);
             return null;
         }
 
-        $deviceMapping = DeviceRegistry::getDeviceMappingByGUID($guid);
-        if (!$deviceMapping || !isset($deviceMapping['mapping'])) {
-            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY, "❌ No mapping in DeviceRegistry for GUID $guid", 0);
+        $deviceDef = DeviceRegistry::getDeviceMappingByGUID($guid);
+        if (!is_array($deviceDef)) {
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY, "❌ No DeviceRegistry entry for GUID $guid (instance=$instanceID)", 0);
             return null;
         }
 
-        // FeatureKey zu Ident auflösen
-        $identMap = array_flip($deviceMapping['mapping']);
-        if (!isset($identMap[$featureKey])) {
-            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY, "❌ No mapping for feature $featureKey in GUID $guid", 0);
+        $attrs = $deviceDef['attributes'] ?? null;
+        if (!is_array($attrs)) {
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY, "❌ DeviceRegistry entry for GUID $guid has no attributes map", 0);
             return null;
         }
 
-        $expectedIdent = $identMap[$featureKey];
-        $varID = @IPS_GetObjectIDByIdent($expectedIdent, $instanceID);
+        $deviceType = (string)($deviceDef['device_type'] ?? '');
+        $featureKey = trim($featureKey);
 
-        if (!$varID || !IPS_VariableExists($varID)) {
-            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY, "❌ Variable with ident $expectedIdent not found in instance $instanceID", 0);
+        // Determine which UC attribute keys we need to satisfy this feature
+        $attrKeys = [];
+
+        if ($deviceType === 'media_player') {
+            // Preferred: use Entity_Media_Player::featureToAttributes if available
+            if (class_exists('Entity_Media_Player') && method_exists('Entity_Media_Player', 'featureToAttributes')) {
+                try {
+                    $mapped = Entity_Media_Player::featureToAttributes($featureKey);
+                    if (is_array($mapped) && !empty($mapped)) {
+                        $attrKeys = array_values(array_filter(array_map('strval', $mapped), fn($v) => trim($v) !== ''));
+                    }
+                } catch (Throwable $e) {
+                    // ignore and fallback
+                    $attrKeys = [];
+                }
+            }
+            // Fallback: treat feature key itself as attribute key
+            if (empty($attrKeys) && $featureKey !== '') {
+                $attrKeys = [$featureKey];
+            }
+        } else {
+            // Backward compatible for lights and others
+            switch ($featureKey) {
+                case 'on_off':
+                    $attrKeys = ['state'];
+                    break;
+                case 'dim':
+                    $attrKeys = ['brightness'];
+                    break;
+                case 'color':
+                    // some registries may map hue or a combined color ident
+                    $attrKeys = ['hue', 'saturation', 'color'];
+                    break;
+                case 'color_temperature':
+                    $attrKeys = ['color_temperature'];
+                    break;
+                default:
+                    // Generic fallback: try the feature key as attribute key
+                    if ($featureKey !== '') {
+                        $attrKeys = [$featureKey];
+                    }
+                    break;
+            }
+        }
+
+        if (empty($attrKeys)) {
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY, "❌ No attribute keys resolved for feature '$featureKey' (GUID $guid)", 0);
             return null;
         }
 
-        return $varID;
+        // Resolve first usable attribute -> ident -> var id
+        foreach ($attrKeys as $attrKey) {
+            $attrKey = trim((string)$attrKey);
+            if ($attrKey === '') {
+                continue;
+            }
+
+            $ident = $attrs[$attrKey] ?? null;
+            $ident = trim((string)$ident);
+
+            // allow explicit opt-out for optional attrs
+            if ($ident === '' || strtoupper($ident) === 'N/A') {
+                $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_DISCOVERY,
+                    "ℹ️ Feature '$featureKey': attribute '$attrKey' has no ident (or N/A) for GUID $guid", 0);
+                continue;
+            }
+
+            $varID = @IPS_GetObjectIDByIdent($ident, $instanceID);
+            if ($varID && @IPS_VariableExists($varID)) {
+                $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_DISCOVERY,
+                    "✅ Resolved feature '$featureKey' via attr '$attrKey' ident '$ident' -> VarID $varID (instance=$instanceID)", 0);
+                return (int)$varID;
+            }
+
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_DISCOVERY,
+                "ℹ️ Feature '$featureKey': ident '$ident' not found in instance $instanceID", 0);
+        }
+
+        $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+            "❌ Could not resolve VarID for feature '$featureKey' (instance=$instanceID, GUID $guid)", 0);
+
+        return null;
     }
 
     /**
@@ -4423,13 +4546,27 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
         // Step 1: Buttons (Scripts)
         $rows = $this->BuildButtonScriptSuggestions();
+        $rows = $this->ApplyPopupSelectionState('popup_button_suggestions', 'script_id', $rows);
         $this->UpdateFormField('popup_button_suggestions', 'values', json_encode($rows, JSON_UNESCAPED_SLASHES));
         $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '✅ Button script suggestions loaded: ' . count($rows), 0);
 
         // Step 2: Lights (Instances)
         $lightRows = $this->BuildLightSuggestions();
+        $lightRows = $this->ApplyPopupSelectionState('popup_light_suggestions', 'instance_id', $lightRows);
         $this->UpdateFormField('popup_light_suggestions', 'values', json_encode($lightRows, JSON_UNESCAPED_SLASHES));
         $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '✅ Light suggestions loaded: ' . count($lightRows), 0);
+
+        // Step 3: Covers (Instances)
+        $coverRows = $this->BuildCoverSuggestions();
+        $coverRows = $this->ApplyPopupSelectionState('popup_cover_suggestions', 'instance_id', $coverRows);
+        $this->UpdateFormField('popup_cover_suggestions', 'values', json_encode($coverRows, JSON_UNESCAPED_SLASHES));
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '✅ Cover suggestions loaded: ' . count($coverRows), 0);
+
+        // Step 4: Mediaplayers (Instances)
+        $mediaRows = $this->BuildMediaPlayerSuggestions();
+        $mediaRows = $this->ApplyPopupSelectionState('popup_media_suggestions', 'instance_id', $mediaRows);
+        $this->UpdateFormField('popup_media_suggestions', 'values', json_encode($mediaRows, JSON_UNESCAPED_SLASHES));
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '✅ Media player suggestions loaded: ' . count($mediaRows), 0);
     }
 
     /**
@@ -4561,95 +4698,636 @@ class Remote3IntegrationDriver extends IPSModuleStrict
     }
 
     /**
-     * Applies the selected suggestions from the device search popup to the instance configuration.
-     * Step 1: Only handle Button (Script) suggestions.
+     * Build suggestions list for "Media Player" devices.
+     * Uses DeviceRegistry definitions (module GUID) to find matching instances.
      *
-     * @param mixed $popupButtonSuggestions Value from the popup list (array or JSON string)
+     * @return array[] Rows for the popup list.
      */
-    public function ApplySuggestedDevices($popupButtonSuggestions = null): void
+    private function BuildMediaPlayerSuggestions(): array
     {
-        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '➕ Applying suggested devices (step 1: buttons)', 0);
-
-        // Normalize incoming list value
         $rows = [];
-        if (is_string($popupButtonSuggestions) && trim($popupButtonSuggestions) !== '') {
-            $decoded = json_decode($popupButtonSuggestions, true);
-            if (is_array($decoded)) {
-                $rows = $decoded;
-            }
-        } elseif (is_array($popupButtonSuggestions)) {
-            $rows = $popupButtonSuggestions;
+
+        if (!class_exists('DeviceRegistry')) {
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                '⚠️ DeviceRegistry class not found – cannot build media player suggestions', 0);
+            return $rows;
         }
 
-        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '📥 Popup button rows received: ' . count($rows), 0);
+        $devices = DeviceRegistry::getSupportedDevices();
+        if (!is_array($devices)) {
+            return $rows;
+        }
 
-        // Filter selected
-        $selected = array_values(array_filter($rows, function ($r) {
-            return is_array($r) && !empty($r['register']);
-        }));
+        foreach ($devices as $def) {
+            if (!is_array($def)) {
+                continue;
+            }
 
-        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '✅ Selected button rows: ' . count($selected), 0);
-        if (empty($selected)) {
+            if (($def['device_type'] ?? '') !== 'media_player') {
+                continue;
+            }
+
+            $moduleGuid = (string)($def['guid'] ?? '');
+            if ($moduleGuid === '') {
+                continue;
+            }
+
+            $registryName = (string)($def['name'] ?? 'Media Player');
+            $manufacturer = (string)($def['manufacturer'] ?? '');
+            $tag = trim(($manufacturer !== '' ? ($manufacturer . ' ') : '') . $registryName);
+            if ($tag === '') {
+                $tag = 'Media Player';
+            }
+
+            // Find instances by module GUID
+            $instanceIDs = [];
+            try {
+                $instanceIDs = @IPS_GetInstanceListByModuleID($moduleGuid);
+            } catch (Throwable $e) {
+                $instanceIDs = [];
+            }
+
+            if (!is_array($instanceIDs) || empty($instanceIDs)) {
+                continue;
+            }
+
+            foreach ($instanceIDs as $iid) {
+                if (!is_int($iid) || !@IPS_InstanceExists($iid)) {
+                    continue;
+                }
+
+                $instName = (string)@IPS_GetName($iid);
+                $path = $this->GetObjectPath($iid);
+
+                $label = ($path !== '' ? ($path . ' → ') : '') . $instName;
+                $label = '[' . $tag . '] ' . $label;
+
+                $rows[] = [
+                    'register' => false,
+                    'label' => $label,
+                    'name' => $instName,
+                    'instance_id' => $iid,
+                    'registry_name' => $registryName
+                ];
+            }
+        }
+
+        // Sort by label for stable UI
+        usort($rows, function ($a, $b) {
+            return strcmp((string)($a['label'] ?? ''), (string)($b['label'] ?? ''));
+        });
+
+        return $rows;
+    }
+
+    /**
+     * Build suggestions list for "Cover" devices.
+     * Uses DeviceRegistry definitions (module GUID) to find matching instances.
+     *
+     * @return array[] Rows for the popup list.
+     */
+    private function BuildCoverSuggestions(): array
+    {
+        $rows = [];
+
+        if (!class_exists('DeviceRegistry')) {
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                '⚠️ DeviceRegistry class not found – cannot build cover suggestions', 0);
+            return $rows;
+        }
+
+        $devices = DeviceRegistry::getSupportedDevices();
+        if (!is_array($devices)) {
+            return $rows;
+        }
+
+        foreach ($devices as $def) {
+            if (!is_array($def)) {
+                continue;
+            }
+
+            if (($def['device_type'] ?? '') !== 'cover') {
+                continue;
+            }
+
+            $moduleGuid = (string)($def['guid'] ?? '');
+            if ($moduleGuid === '') {
+                continue;
+            }
+
+            $registryName = (string)($def['name'] ?? 'Cover');
+            $manufacturer = (string)($def['manufacturer'] ?? '');
+            $tag = trim(($manufacturer !== '' ? ($manufacturer . ' ') : '') . $registryName);
+            if ($tag === '') {
+                $tag = 'Cover';
+            }
+
+            // Find instances by module GUID
+            $instanceIDs = [];
+            try {
+                $instanceIDs = @IPS_GetInstanceListByModuleID($moduleGuid);
+            } catch (Throwable $e) {
+                $instanceIDs = [];
+            }
+
+            if (!is_array($instanceIDs) || empty($instanceIDs)) {
+                continue;
+            }
+
+            foreach ($instanceIDs as $iid) {
+                if (!is_int($iid) || !@IPS_InstanceExists($iid)) {
+                    continue;
+                }
+
+                $instName = (string)@IPS_GetName($iid);
+                $path = $this->GetObjectPath($iid);
+
+                $label = ($path !== '' ? ($path . ' → ') : '') . $instName;
+                $label = '[' . $tag . '] ' . $label;
+
+                $rows[] = [
+                    'register' => false,
+                    'label' => $label,
+                    'name' => $instName,
+                    'instance_id' => $iid,
+                    'registry_name' => $registryName
+                ];
+            }
+        }
+
+        // Sort by label for stable UI
+        usort($rows, function ($a, $b) {
+            return strcmp((string)($a['label'] ?? ''), (string)($b['label'] ?? ''));
+        });
+
+        return $rows;
+    }
+
+    /**
+     * Stores a single selected row from a popup list into an attribute.
+     * Universal: supports different key fields (e.g. script_id for buttons, instance_id for others).
+     * IPSModuleStrict: public methods must use scalar types; we accept strings only.
+     *
+     * @param string $listName Attribute name (e.g. "popup_button_suggestions")
+     * @param string $register "1"/"0" or "true"/"false"
+     * @param string $keyField Key column name (e.g. "script_id" or "instance_id")
+     * @param string $keyValue Key value (e.g. "12345")
+     */
+    public function StorePopupList(string $listName, string $register, string $keyField, string $keyValue): void
+    {
+        $reg = in_array(strtolower(trim($register)), ['1', 'true', 'yes', 'on'], true);
+        $keyField = trim($keyField);
+        $keyId = (int)trim($keyValue);
+
+        if ($keyField === '') {
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY, "⚠️ StorePopupList: empty keyField for list '$listName'", 0);
             return;
         }
 
-        // Load existing mapping (property stores JSON array)
-        $existing = [];
-        try {
-            $existingRaw = (string)$this->ReadPropertyString('button_mapping');
-            $existingDecoded = json_decode($existingRaw, true);
-            if (is_array($existingDecoded)) {
-                $existing = $existingDecoded;
-            }
-        } catch (Throwable $e) {
-            $existing = [];
+        // Defensive: ignore empty keys
+        if ($keyId <= 0) {
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY, "⚠️ StorePopupList: invalid keyValue='$keyValue' for keyField='$keyField'", 0);
+            return;
         }
 
-        // Index existing script_ids to prevent duplicates
-        $existingScriptIds = [];
-        foreach ($existing as $e) {
-            if (is_array($e) && isset($e['script_id'])) {
-                $existingScriptIds[(int)$e['script_id']] = true;
+        // Read current attribute content (JSON array)
+        $raw = trim((string)$this->ReadAttributeString($listName));
+        $rows = [];
+        if ($raw !== '') {
+            $decoded = json_decode($raw, true);
+            if (is_array($decoded)) {
+                $rows = $decoded;
             }
         }
 
-        $added = 0;
-        foreach ($selected as $s) {
-            $sid = isset($s['script_id']) ? (int)$s['script_id'] : 0;
-            if ($sid <= 0 || !@IPS_ScriptExists($sid)) {
-                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY, '⚠️ Skipping invalid script_id: ' . $sid, 0);
+        // Update/insert row by key field
+        $updated = false;
+        foreach ($rows as &$row) {
+            if (!is_array($row)) {
                 continue;
             }
-            if (isset($existingScriptIds[$sid])) {
-                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, 'ℹ️ Script already mapped, skipping: ' . $sid, 0);
-                continue;
+            if ((int)($row[$keyField] ?? 0) === $keyId) {
+                $row['register'] = $reg;
+                $row[$keyField] = $keyId;
+                $updated = true;
+                break;
             }
+        }
+        unset($row);
 
-            $name = (string)($s['name'] ?? 'Button');
-            if ($name === '') {
-                $name = (string)@IPS_GetName($sid);
-            }
-
-            $existing[] = [
-                'name' => $name,
-                'script_id' => $sid
+        if (!$updated) {
+            $rows[] = [
+                'register' => $reg,
+                $keyField => $keyId
             ];
-            $existingScriptIds[$sid] = true;
-            $added++;
         }
 
-        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '➕ Buttons added to mapping: ' . $added, 0);
+        $this->WriteAttributeString($listName, json_encode($rows, JSON_UNESCAPED_SLASHES));
 
-        // Update UI immediately
-        $this->UpdateFormField('button_mapping', 'values', json_encode($existing, JSON_UNESCAPED_SLASHES));
-
-        // Persist into property as well (user may forget to press Apply)
-        // This writes the property, but the user still needs to press Apply for ApplyChanges() to run.
-        $this->UpdateFormField('button_mapping', 'value', json_encode($existing, JSON_UNESCAPED_SLASHES));
-
-        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '✅ Button mapping updated in form (remember to press Apply)', 0);
+        $this->Debug(
+            __FUNCTION__,
+            self::LV_INFO,
+            self::TOPIC_DISCOVERY,
+            "💾 Stored selected row into attribute '$listName' ($keyField=$keyId register=" . ($reg ? 'true' : 'false') . ")",
+            0
+        );
     }
 
+    /**
+     * Applies cached register-state from an attribute to freshly built popup rows.
+     *
+     * @param string $listName Attribute name (e.g. popup_button_suggestions)
+     * @param string $keyField Key column (e.g. script_id / instance_id)
+     * @param array $rows Fresh rows built for the list
+     * @return array Updated rows with register state restored
+     */
+    private function ApplyPopupSelectionState(string $listName, string $keyField, array $rows): array
+    {
+        $raw = trim((string)$this->ReadAttributeString($listName));
+        if ($raw === '') {
+            return $rows;
+        }
+
+        $cached = json_decode($raw, true);
+        if (!is_array($cached)) {
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                "⚠️ Cached attribute '$listName' is not valid JSON", 0);
+            return $rows;
+        }
+
+        // Build map: keyId => register(bool)
+        $map = [];
+        foreach ($cached as $c) {
+            if (!is_array($c)) continue;
+            $id = (int)($c[$keyField] ?? 0);
+            if ($id <= 0) continue;
+            $map[$id] = !empty($c['register']);
+        }
+
+        if (empty($map)) {
+            return $rows;
+        }
+
+        // Apply to fresh rows
+        foreach ($rows as &$r) {
+            if (!is_array($r)) continue;
+            $id = (int)($r[$keyField] ?? 0);
+            if ($id <= 0) continue;
+
+            if (array_key_exists($id, $map)) {
+                $r['register'] = (bool)$map[$id];
+            }
+        }
+        unset($r);
+
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+            "✅ Restored selection state for '$listName' (" . count($map) . " cached keys)", 0);
+
+        return $rows;
+    }
+
+    /**
+     * Reads a popup list cache attribute (stored by StorePopupList) and returns only selected rows.
+     *
+     * @param string $listName Attribute name, e.g. "popup_media_suggestions"
+     * @param string $keyField Key column, e.g. "instance_id" or "script_id"
+     * @return array Selected rows (register=true) with a valid keyField value
+     */
+    private function ReadSelectedFromPopupCache(string $listName, string $keyField): array
+    {
+        $raw = trim((string)$this->ReadAttributeString($listName));
+        if ($raw === '') {
+            return [];
+        }
+
+        $rows = json_decode($raw, true);
+        if (!is_array($rows)) {
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                "⚠️ Cached attribute '$listName' is not valid JSON", 0);
+            return [];
+        }
+
+        $selected = array_values(array_filter($rows, function ($r) use ($keyField) {
+            if (!is_array($r)) {
+                return false;
+            }
+            if (empty($r['register'])) {
+                return false;
+            }
+            $id = (int)($r[$keyField] ?? 0);
+            return $id > 0;
+        }));
+
+        return $selected;
+    }
+
+    public function ApplySuggestedDevices(): void
+    {
+        try {
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                '➕ Applying suggested devices (step 1: buttons)', 0);
+
+            $raw = (string)$this->ReadAttributeString('popup_button_suggestions');
+            $raw = trim($raw);
+            if ($raw === '') {
+                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                    '⚠️ No cached popup_button_suggestions attribute found (did onEdit fire?)', 0);
+                return;
+            }
+
+            $rows = json_decode($raw, true);
+            if (!is_array($rows)) {
+                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                    '⚠️ Cached popup_button_suggestions attribute is not valid JSON', 0);
+                $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_DISCOVERY,
+                    'Raw popup_button_suggestions attribute:' . $raw, 0);
+                return;
+            }
+
+            $selected = array_values(array_filter($rows, fn($r) => is_array($r) && !empty($r['register'])));
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                '✅ Selected button rows: ' . count($selected), 0);
+
+            if (!$selected) {
+                return;
+            }
+
+            // existierendes Mapping holen
+            $existing = json_decode((string)$this->ReadPropertyString('button_mapping'), true);
+            if (!is_array($existing)) $existing = [];
+
+            $existingIds = [];
+            foreach ($existing as $e) {
+                if (is_array($e) && isset($e['script_id'])) $existingIds[(int)$e['script_id']] = true;
+            }
+
+            $added = 0;
+            foreach ($selected as $s) {
+                $sid = (int)($s['script_id'] ?? 0);
+                if ($sid <= 0 || !IPS_ScriptExists($sid)) continue;
+                if (isset($existingIds[$sid])) continue;
+
+                $name = (string)($s['name'] ?? IPS_GetName($sid));
+                $existing[] = ['name' => $name, 'script_id' => $sid];
+                $existingIds[$sid] = true;
+                $added++;
+            }
+
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                '➕ Buttons added to mapping: ' . $added, 0);
+
+            // UI updaten
+            $this->UpdateFormField('button_mapping', 'values', json_encode($existing, JSON_UNESCAPED_SLASHES));
+
+            // -------------------------
+            // Step 2: Lights
+            // -------------------------
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                '➕ Applying suggested devices (step 2: lights)', 0);
+
+            $rawLights = trim((string)$this->ReadAttributeString('popup_light_suggestions'));
+            if ($rawLights === '') {
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                    'ℹ️ No cached popup_light_suggestions attribute found (no light selections)', 0);
+                return;
+            }
+
+            $lightRows = json_decode($rawLights, true);
+            if (!is_array($lightRows)) {
+                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                    '⚠️ Cached popup_light_suggestions attribute is not valid JSON', 0);
+                return;
+            }
+
+            $selectedLights = array_values(array_filter($lightRows, fn($r) => is_array($r) && !empty($r['register']) && !empty($r['instance_id'])
+            ));
+
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                '✅ Selected light rows: ' . count($selectedLights), 0);
+
+            if (!$selectedLights) {
+                return;
+            }
+
+            // existierendes Light-Mapping holen
+            $existingLights = json_decode((string)$this->ReadPropertyString('light_mapping'), true);
+            if (!is_array($existingLights)) $existingLights = [];
+
+            $existingInstanceIds = [];
+            foreach ($existingLights as $e) {
+                if (is_array($e) && isset($e['instance_id'])) {
+                    $existingInstanceIds[(int)$e['instance_id']] = true;
+                }
+            }
+
+            $addedLights = 0;
+            foreach ($selectedLights as $s) {
+                $iid = (int)($s['instance_id'] ?? 0);
+                if ($iid <= 0 || !IPS_InstanceExists($iid)) continue;
+                if (isset($existingInstanceIds[$iid])) continue;
+
+                // Resolve variables via DeviceRegistry mapping
+                $switchVar = $this->ResolveFeatureVarID($iid, 'on_off');
+                if (!$switchVar || !IPS_VariableExists($switchVar)) {
+                    $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                        "⚠️ Skipping light instance $iid: no 'on_off' variable found via DeviceRegistry", 0);
+                    continue;
+                }
+
+                $brightnessVar = $this->ResolveFeatureVarID($iid, 'dim') ?? 0;
+                $colorVar = $this->ResolveFeatureVarID($iid, 'color') ?? 0;
+                $colorTempVar = $this->ResolveFeatureVarID($iid, 'color_temperature') ?? 0;
+
+                $existingLights[] = [
+                    'name' => IPS_GetName($iid),
+                    'instance_id' => $iid,
+                    'switch_var_id' => $switchVar,
+                    'brightness_var_id' => (int)$brightnessVar,
+                    'color_var_id' => (int)$colorVar,
+                    'color_temp_var_id' => (int)$colorTempVar
+                ];
+
+                $existingInstanceIds[$iid] = true;
+                $addedLights++;
+            }
+
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                '➕ Lights added to mapping: ' . $addedLights, 0);
+
+            // UI updaten
+            $this->UpdateFormField('light_mapping', 'values', json_encode($existingLights, JSON_UNESCAPED_SLASHES));
+
+            // -------------------------
+            // Step 3: Covers
+            // -------------------------
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                '➕ Applying suggested devices (step 3: covers)', 0);
+
+            $coverSelected = $this->ReadSelectedFromPopupCache('popup_cover_suggestions', 'instance_id');
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                '✅ Selected cover rows: ' . count($coverSelected), 0);
+
+            if (!$coverSelected) {
+                // continue with next step
+            } else {
+                // existing Cover mapping
+                $existingCovers = json_decode((string)$this->ReadPropertyString('cover_mapping'), true);
+                if (!is_array($existingCovers)) {
+                    $existingCovers = [];
+                }
+
+                $existingCoverInstanceIds = [];
+                foreach ($existingCovers as $e) {
+                    if (is_array($e) && isset($e['instance_id'])) {
+                        $existingCoverInstanceIds[(int)$e['instance_id']] = true;
+                    }
+                }
+
+                $addedCovers = 0;
+
+                foreach ($coverSelected as $s) {
+                    $iid = (int)($s['instance_id'] ?? 0);
+                    if ($iid <= 0 || !IPS_InstanceExists($iid)) {
+                        continue;
+                    }
+                    if (isset($existingCoverInstanceIds[$iid])) {
+                        continue;
+                    }
+
+                    // Resolve variables via DeviceRegistry mapping
+                    // For covers, position is typically the primary control/state variable (e.g. Ident 'LEVEL').
+                    $positionVar = $this->ResolveFeatureVarID($iid, 'position');
+                    if (!$positionVar || !IPS_VariableExists($positionVar)) {
+                        // Fallback: try open/close features (both usually map to position)
+                        $positionVar = $this->ResolveFeatureVarID($iid, 'open');
+                    }
+
+                    if (!$positionVar || !IPS_VariableExists($positionVar)) {
+                        $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                            "⚠️ Skipping cover instance $iid: no 'position' variable found via DeviceRegistry", 0);
+                        continue;
+                    }
+
+                    // Some cover integrations may provide a separate control/action variable. If not present, keep 0.
+                    $controlVar = $this->ResolveFeatureVarID($iid, 'control') ?? 0;
+                    if ($controlVar && !IPS_VariableExists($controlVar)) {
+                        $controlVar = 0;
+                    }
+
+                    $existingCovers[] = [
+                        'name' => IPS_GetName($iid),
+                        'instance_id' => $iid,
+                        'position_var_id' => (int)$positionVar,
+                        'control_var_id' => (int)$controlVar
+                    ];
+
+                    $existingCoverInstanceIds[$iid] = true;
+                    $addedCovers++;
+                }
+
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                    '➕ Covers added to mapping: ' . $addedCovers, 0);
+
+                $this->UpdateFormField('cover_mapping', 'values', json_encode($existingCovers, JSON_UNESCAPED_SLASHES));
+            }
+
+            // -------------------------
+            // Step 4: Media Players
+            // -------------------------
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                '➕ Applying suggested devices (step 4: media players)', 0);
+
+            $mediaSelected = $this->ReadSelectedFromPopupCache('popup_media_suggestions', 'instance_id');
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                '✅ Selected media player rows: ' . count($mediaSelected), 0);
+
+            if (!$mediaSelected) {
+                return;
+            }
+
+            // existing Media-Player mapping
+            $existingMedia = json_decode((string)$this->ReadPropertyString('media_player_mapping'), true);
+            if (!is_array($existingMedia)) $existingMedia = [];
+
+            $existingMediaInstanceIds = [];
+            foreach ($existingMedia as $e) {
+                if (is_array($e) && isset($e['instance_id'])) {
+                    $existingMediaInstanceIds[(int)$e['instance_id']] = true;
+                }
+            }
+
+            $addedMedia = 0;
+
+            foreach ($mediaSelected as $s) {
+                $iid = (int)($s['instance_id'] ?? 0);
+                if ($iid <= 0 || !IPS_InstanceExists($iid)) {
+                    continue;
+                }
+                if (isset($existingMediaInstanceIds[$iid])) {
+                    continue;
+                }
+
+                // Determine module GUID of this instance
+                $inst = IPS_GetInstance($iid);
+                $guid = $inst['ModuleInfo']['ModuleID'] ?? '';
+
+                // Lookup device definition from registry
+                $deviceDef = null;
+                if (class_exists('DeviceRegistry')) {
+                    $deviceDef = DeviceRegistry::getDeviceMappingByGUID((string)$guid);
+                }
+
+                if (!is_array($deviceDef)) {
+                    $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                        "⚠️ Skipping media player instance $iid: no DeviceRegistry entry for GUID $guid", 0);
+                    continue;
+                }
+
+                $features = $deviceDef['features'] ?? [];
+                if (!is_array($features)) {
+                    $features = [];
+                }
+
+                $featureRows = [];
+                foreach ($features as $featureKey) {
+                    $featureKey = (string)$featureKey;
+                    if ($featureKey === '') continue;
+
+                    // Uses ResolveFeatureVarID() — you will map features via DeviceRegistry
+                    $varId = $this->ResolveFeatureVarID($iid, $featureKey);
+                    if (!$varId || !IPS_VariableExists($varId)) {
+                        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                            "ℹ️ Media player $iid: feature '$featureKey' not resolved (missing ident/var)", 0);
+                        continue;
+                    }
+
+                    $featureRows[] = [
+                        'feature_key' => $featureKey,
+                        'var_id' => (int)$varId
+                    ];
+                }
+
+                $existingMedia[] = [
+                    'name' => IPS_GetName($iid),
+                    'instance_id' => $iid,
+                    'features' => $featureRows
+                ];
+
+                $existingMediaInstanceIds[$iid] = true;
+                $addedMedia++;
+            }
+
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                '➕ Media players added to mapping: ' . $addedMedia, 0);
+
+            $this->UpdateFormField('media_player_mapping', 'values', json_encode($existingMedia, JSON_UNESCAPED_SLASHES));
+        } catch (Throwable $e) {
+            $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_DISCOVERY,
+                '💥 ApplySuggestedDevices crashed: ' . $e->getMessage(), 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_DISCOVERY,
+                $e->getTraceAsString(), 0);
+        }
+    }
 
     /**
      * Returns a readable path for an object id.
@@ -4689,6 +5367,145 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         return array_values(array_unique($parts));
     }
 
+    private function GetMappedVarIdsForInstance(int $instanceID): array
+    {
+        $varIds = [];
+
+        // Switch mapping
+        $map = json_decode($this->ReadPropertyString('switch_mapping'), true);
+        if (is_array($map)) {
+            foreach ($map as $e) {
+                if ((int)($e['instance_id'] ?? 0) === $instanceID && !empty($e['var_id'])) {
+                    $varIds[] = (int)$e['var_id'];
+                }
+            }
+        }
+
+        // Sensor mapping
+        $map = json_decode($this->ReadPropertyString('sensor_mapping'), true);
+        if (is_array($map)) {
+            foreach ($map as $e) {
+                if ((int)($e['instance_id'] ?? 0) === $instanceID && !empty($e['var_id'])) {
+                    $varIds[] = (int)$e['var_id'];
+                }
+            }
+        }
+
+        // IR mapping
+        $map = json_decode($this->ReadPropertyString('ir_mapping'), true);
+        if (is_array($map)) {
+            foreach ($map as $e) {
+                if ((int)($e['instance_id'] ?? 0) === $instanceID && !empty($e['var_id'])) {
+                    $varIds[] = (int)$e['var_id'];
+                }
+            }
+        }
+
+        // Remote mapping
+        $map = json_decode($this->ReadPropertyString('remote_mapping'), true);
+        if (is_array($map)) {
+            foreach ($map as $e) {
+                if ((int)($e['instance_id'] ?? 0) === $instanceID && !empty($e['var_id'])) {
+                    $varIds[] = (int)$e['var_id'];
+                }
+            }
+        }
+
+        // Cover mapping
+        $map = json_decode($this->ReadPropertyString('cover_mapping'), true);
+        if (is_array($map)) {
+            foreach ($map as $e) {
+                if ((int)($e['instance_id'] ?? 0) === $instanceID) {
+                    if (!empty($e['position_var_id'])) $varIds[] = (int)$e['position_var_id'];
+                    if (!empty($e['control_var_id'])) $varIds[] = (int)$e['control_var_id'];
+                }
+            }
+        }
+
+        // Climate mapping
+        $map = json_decode($this->ReadPropertyString('climate_mapping'), true);
+        if (is_array($map)) {
+            foreach ($map as $e) {
+                if ((int)($e['instance_id'] ?? 0) === $instanceID) {
+                    foreach (['status_var_id', 'current_temp_var_id', 'target_temp_var_id', 'mode_var_id'] as $k) {
+                        if (!empty($e[$k])) $varIds[] = (int)$e[$k];
+                    }
+                }
+            }
+        }
+
+        // Light mapping
+        $map = json_decode($this->ReadPropertyString('light_mapping'), true);
+        if (is_array($map)) {
+            foreach ($map as $e) {
+                if ((int)($e['instance_id'] ?? 0) === $instanceID) {
+                    foreach (['switch_var_id', 'brightness_var_id', 'color_var_id', 'color_temp_var_id'] as $k) {
+                        if (!empty($e[$k])) $varIds[] = (int)$e[$k];
+                    }
+                }
+            }
+        }
+
+        // Media player mapping (features list)
+        $map = json_decode($this->ReadPropertyString('media_player_mapping'), true);
+        if (is_array($map)) {
+            foreach ($map as $e) {
+                if ((int)($e['instance_id'] ?? 0) !== $instanceID) continue;
+                $features = $e['features'] ?? null;
+                if (!is_array($features)) continue;
+                foreach ($features as $f) {
+                    if (!empty($f['var_id'])) $varIds[] = (int)$f['var_id'];
+                }
+            }
+        }
+
+        // Cleanup
+        $varIds = array_filter(array_unique($varIds), fn($v) => $v > 0 && IPS_VariableExists($v));
+        return array_values($varIds);
+    }
+
+    private function BuildDebugClientIPsConfig(): array
+    {
+        $raw = (string)$this->ReadPropertyString('debug_client_ips_cfg');
+        $cfg = json_decode($raw, true);
+
+        $existing = [];
+        if (is_array($cfg)) {
+            foreach ($cfg as $row) {
+                if (!is_array($row)) continue;
+                $ip = trim((string)($row['ip'] ?? ''));
+                if ($ip === '') continue;
+                $existing[] = ['ip' => $ip];
+            }
+        }
+
+        return $existing;
+    }
+
+    private function GetConfiguredClientIPs(): array
+    {
+        $ips = [];
+
+        // New list-based config
+        $rows = json_decode((string)$this->ReadPropertyString('debug_client_ips_cfg'), true);
+        if (is_array($rows)) {
+            foreach ($rows as $row) {
+                if (!is_array($row)) continue;
+                $ip = trim((string)($row['ip'] ?? ''));
+                if ($ip !== '') $ips[] = $ip;
+            }
+        }
+
+        // Backward compatible: legacy CSV property (if still present)
+        $legacy = (string)$this->ReadPropertyString('debug_client_ips');
+        if ($legacy !== '') {
+            $ips = array_merge($ips, $this->ParseCsvList($legacy));
+        }
+
+        $ips = array_values(array_unique(array_filter($ips, fn($v) => $v !== '')));
+        return $ips;
+    }
+
     private function DebugFilterMatches(string $message, $data, string $topic, int $level): bool
     {
         // Level gate is ALWAYS applied
@@ -4701,11 +5518,10 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         }
 
         // Topic gate (empty = allow all)
-        $topics = $this->ParseCsvList((string)$this->ReadPropertyString('debug_topics'));
-        if (!empty($topics)) {
+        $enabledTopics = $this->GetEnabledDebugTopics();
+        if (!empty($enabledTopics)) {
             $topicUpper = strtoupper($topic);
-            $topicsUpper = array_map('strtoupper', $topics);
-            if (!in_array($topicUpper, $topicsUpper, true)) {
+            if (!in_array($topicUpper, $enabledTopics, true)) {
                 return false;
             }
         }
@@ -4723,11 +5539,27 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
         $entityIds = $this->ParseCsvList((string)$this->ReadPropertyString('debug_entity_ids'));
         $varIds = $this->ParseCsvList((string)$this->ReadPropertyString('debug_var_ids'));
-        $clientIps = $this->ParseCsvList((string)$this->ReadPropertyString('debug_client_ips'));
+        $clientIps = $this->GetConfiguredClientIPs();
 
         $textFilter = (string)$this->ReadPropertyString('debug_text_filter');
         $textIsRegex = (bool)$this->ReadPropertyBoolean('debug_text_is_regex');
         $strict = (bool)$this->ReadPropertyBoolean('debug_strict_match');
+
+        // Instance/device filter (select instance -> resolve mapped VarIDs)
+        $instanceRows = json_decode($this->ReadPropertyString('debug_filter_instances'), true);
+        if (is_array($instanceRows)) {
+            foreach ($instanceRows as $row) {
+                if (!is_array($row)) continue;
+                $iid = (int)($row['instance_id'] ?? 0);
+                if ($iid <= 0 || !IPS_InstanceExists($iid)) continue;
+
+                foreach ($this->GetMappedVarIdsForInstance($iid) as $vid) {
+                    $varIds[] = (string)$vid;
+                }
+            }
+            $varIds = array_values(array_unique(array_filter($varIds, fn($v) => $v !== '')));
+        }
+
 
         // Prepare haystack
         if (is_string($data)) {
@@ -4926,6 +5758,81 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $this->SendDebug(__FUNCTION__, '✅ TestFilteredDebug executed', 0);
     }
 
+    private function GetDebugTopicMasterList(): array
+    {
+        return [
+            self::TOPIC_GEN => 'General / module lifecycle',
+            self::TOPIC_AUTH => 'Authentication / token / whitelist',
+            self::TOPIC_HOOK => 'Webhook requests / responses',
+            self::TOPIC_WS => 'WebSocket frames / low-level',
+            self::TOPIC_IO => 'Socket I/O / transport details',
+            self::TOPIC_ENTITY => 'Entity updates sent to Remote 3',
+            self::TOPIC_VM => 'Variable/MessageSink processing',
+            self::TOPIC_DISCOVERY => 'Discovery / device mapping helpers',
+            self::TOPIC_API => 'Remote API calls',
+            self::TOPIC_FORM => 'Form/UI helpers / sessions list',
+            self::TOPIC_EXT => 'Extended / verbose debug'
+        ];
+    }
+
+    private function BuildDebugTopicsConfig(): array
+    {
+        $raw = $this->ReadPropertyString('debug_topics_cfg');
+        $cfg = json_decode($raw, true);
+
+        $master = $this->GetDebugTopicMasterList();
+        $result = [];
+
+        // If config exists: use it
+        $enabledByTopic = [];
+        if (is_array($cfg)) {
+            foreach ($cfg as $row) {
+                if (!is_array($row)) continue;
+                $t = strtoupper(trim((string)($row['topic'] ?? '')));
+                if ($t === '') continue;
+                $enabledByTopic[$t] = (bool)($row['enabled'] ?? true);
+            }
+        }
+
+        // Build full list (all topics default enabled)
+        foreach ($master as $topic => $desc) {
+            $topic = strtoupper($topic);
+            $result[] = [
+                'enabled' => $enabledByTopic[$topic] ?? true,
+                'topic' => $topic,
+                'description' => $desc
+            ];
+        }
+
+        return $result;
+    }
+
+    private function GetEnabledDebugTopics(): array
+    {
+        // If user never touched topics -> allow all (empty list means "no restriction")
+        $rows = json_decode($this->ReadPropertyString('debug_topics_cfg'), true);
+        if (!is_array($rows)) {
+            return []; // allow all
+        }
+
+        $enabled = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) continue;
+            $topic = strtoupper(trim((string)($row['topic'] ?? '')));
+            if ($topic === '') continue;
+            if ((bool)($row['enabled'] ?? true)) {
+                $enabled[] = $topic;
+            }
+        }
+
+        // If all are disabled (user error) -> treat as allow all (avoid "no debug at all")
+        if (count($enabled) === 0) {
+            return [];
+        }
+
+        return array_values(array_unique($enabled));
+    }
+
     /**
      * build configuration form
      *
@@ -4984,7 +5891,8 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                             ],
                             'add' => false,
                             'delete' => false,
-                            'rowCount' => 8
+                            'rowCount' => 8,
+                            'onEdit' => 'UCR_StorePopupList($id, "popup_button_suggestions", (string)$popup_button_suggestions["register"], "script_id", (string)$popup_button_suggestions["script_id"]);'
                         ],
                         [
                             'type' => 'List',
@@ -4994,10 +5902,12 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                                 ['caption' => 'Register', 'name' => 'register', 'width' => '140px', 'add' => false, 'edit' => ['type' => 'CheckBox']],
                                 ['caption' => '📦 Object', 'name' => 'label', 'width' => '200px'],
                                 ['caption' => 'Name', 'name' => 'name', 'width' => 'auto', 'add' => '', 'edit' => ['type' => 'ValidationTextBox']],
+                                ['caption' => 'Instance ID', 'name' => 'instance_id', 'width' => '10px', 'visible' => false, 'save' => true],
                             ],
                             'add' => false,
                             'delete' => false,
-                            'rowCount' => 8
+                            'rowCount' => 8,
+                            'onEdit' => 'UCR_StorePopupList($id, "popup_climate_suggestions", (string)$popup_climate_suggestions["register"], "instance_id", (string)$popup_climate_suggestions["instance_id"]);'
                         ],
                         [
                             'type' => 'List',
@@ -5007,10 +5917,12 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                                 ['caption' => 'Register', 'name' => 'register', 'width' => '140px', 'add' => false, 'edit' => ['type' => 'CheckBox']],
                                 ['caption' => '📦 Object', 'name' => 'label', 'width' => '200px'],
                                 ['caption' => 'Name', 'name' => 'name', 'width' => 'auto', 'add' => '', 'edit' => ['type' => 'ValidationTextBox']],
+                                ['caption' => 'Instance ID', 'name' => 'instance_id', 'width' => '10px', 'visible' => false, 'save' => true],
                             ],
                             'add' => false,
                             'delete' => false,
-                            'rowCount' => 8
+                            'rowCount' => 8,
+                            'onEdit' => 'UCR_StorePopupList($id, "popup_cover_suggestions", (string)$popup_cover_suggestions["register"], "instance_id", (string)$popup_cover_suggestions["instance_id"]);'
                         ],
                         [
                             'type' => 'List',
@@ -5020,12 +5932,13 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                                 ['caption' => 'Register', 'name' => 'register', 'width' => '125px', 'add' => false, 'edit' => ['type' => 'CheckBox'], 'save' => true],
                                 ['caption' => '📦 Object', 'name' => 'label', 'width' => 'auto', 'save' => true],
                                 ['caption' => 'Name', 'name' => 'name', 'width' => '300px', 'add' => '', 'edit' => ['type' => 'ValidationTextBox'], 'save' => true],
-                                ['caption' => 'Instance ID', 'name' => 'instance_id', 'width' => '100px', 'visible' => false, 'save' => true],
                                 ['caption' => 'Registry', 'name' => 'registry_name', 'width' => '100px', 'visible' => false, 'save' => true],
+                                ['caption' => 'Instance ID', 'name' => 'instance_id', 'width' => '10px', 'visible' => false, 'save' => true],
                             ],
                             'add' => false,
                             'delete' => false,
-                            'rowCount' => 8
+                            'rowCount' => 8,
+                            'onEdit' => 'UCR_StorePopupList($id, "popup_light_suggestions", (string)$popup_light_suggestions["register"], "instance_id", (string)$popup_light_suggestions["instance_id"]);'
                         ],
                         [
                             'type' => 'List',
@@ -5035,10 +5948,12 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                                 ['caption' => 'Register', 'name' => 'register', 'width' => '140px', 'add' => false, 'edit' => ['type' => 'CheckBox']],
                                 ['caption' => '📦 Object', 'name' => 'label', 'width' => '200px'],
                                 ['caption' => 'Name', 'name' => 'name', 'width' => 'auto', 'add' => '', 'edit' => ['type' => 'ValidationTextBox']],
+                                ['caption' => 'Instance ID', 'name' => 'instance_id', 'width' => '10px', 'visible' => false, 'save' => true],
                             ],
                             'add' => false,
                             'delete' => false,
-                            'rowCount' => 8
+                            'rowCount' => 8,
+                            'onEdit' => 'UCR_StorePopupList($id, "popup_media_suggestions", (string)$popup_media_suggestions["register"], "instance_id", (string)$popup_media_suggestions["instance_id"]);'
                         ],
                         [
                             'type' => 'List',
@@ -5048,10 +5963,12 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                                 ['caption' => 'Register', 'name' => 'register', 'width' => '140px', 'add' => false, 'edit' => ['type' => 'CheckBox']],
                                 ['caption' => '📦 Object', 'name' => 'label', 'width' => '200px'],
                                 ['caption' => 'Name', 'name' => 'name', 'width' => 'auto', 'add' => '', 'edit' => ['type' => 'ValidationTextBox']],
+                                ['caption' => 'Instance ID', 'name' => 'instance_id', 'width' => '10px', 'visible' => false, 'save' => true],
                             ],
                             'add' => false,
                             'delete' => false,
-                            'rowCount' => 8
+                            'rowCount' => 8,
+                            'onEdit' => 'UCR_StorePopupList($id, "popup_remote_suggestions", (string)$popup_remote_suggestions["register"], "instance_id", (string)$popup_remote_suggestions["instance_id"]);'
                         ],
                         [
                             'type' => 'List',
@@ -5061,10 +5978,12 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                                 ['caption' => 'Register', 'name' => 'register', 'width' => '140px', 'add' => false, 'edit' => ['type' => 'CheckBox']],
                                 ['caption' => '📦 Object', 'name' => 'label', 'width' => '200px'],
                                 ['caption' => 'Name', 'name' => 'name', 'width' => 'auto', 'add' => '', 'edit' => ['type' => 'ValidationTextBox']],
+                                ['caption' => 'Instance ID', 'name' => 'instance_id', 'width' => '10px', 'visible' => false, 'save' => true],
                             ],
                             'add' => false,
                             'delete' => false,
-                            'rowCount' => 8
+                            'rowCount' => 8,
+                            'onEdit' => 'UCR_StorePopupList($id, "popup_sensor_suggestions", (string)$popup_sensor_suggestions["register"], "instance_id", (string)$popup_sensor_suggestions["instance_id"]);'
                         ],
                         [
                             'type' => 'List',
@@ -5074,17 +5993,18 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                                 ['caption' => 'Register', 'name' => 'register', 'width' => '140px', 'add' => false, 'edit' => ['type' => 'CheckBox']],
                                 ['caption' => '📦 Object', 'name' => 'label', 'width' => '200px'],
                                 ['caption' => 'Name', 'name' => 'name', 'width' => 'auto', 'add' => '', 'edit' => ['type' => 'ValidationTextBox']],
+                                ['caption' => 'Instance ID', 'name' => 'instance_id', 'width' => '10px', 'visible' => false, 'save' => true],
                             ],
                             'add' => false,
                             'delete' => false,
-                            'rowCount' => 8
+                            'rowCount' => 8,
+                            'onEdit' => 'UCR_StorePopupList($id, "popup_switch_suggestions", (string)$popup_switch_suggestions["register"], "instance_id", (string)$popup_switch_suggestions["instance_id"]);'
                         ]
                     ],
                     'buttons' => [
                         [
                             'type' => 'Button',
                             'caption' => '➕ Add Devices',
-                            //'onClick' => 'UCR_ApplySuggestedDevices($id, $popup_button_suggestions);'
                             'onClick' => 'UCR_ApplySuggestedDevices($id);'
                         ]
                     ]
@@ -5105,7 +6025,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                             [
                                 'caption' => 'Name',
                                 'name' => 'name',
-                                'width' => '200px',
+                                'width' => '400px',
                                 'add' => 'Button',
                                 'edit' => [
                                     'type' => 'ValidationTextBox'
@@ -5139,7 +6059,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                             [
                                 'caption' => 'Name',
                                 'name' => 'name',
-                                'width' => '200px',
+                                'width' => '400px',
                                 'add' => 'Switch',
                                 'edit' => [
                                     'type' => 'ValidationTextBox'
@@ -5758,14 +6678,59 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                     ],
                     // Available topics: GEN, AUTH, HOOK, WS, ENTITY, VM, DISCOVERY, API, FORM, EXT
                     [
-                        'type' => 'ValidationTextBox',
-                        'name' => 'debug_topics',
-                        'caption' => 'Topics (CSV, empty = all)'
+                        'type' => 'List',
+                        'name' => 'debug_topics_cfg',
+                        'caption' => 'Topics',
+                        'rowCount' => 10,
+                        'add' => false,
+                        'delete' => false,
+                        'columns' => [
+                            [
+                                'caption' => 'Show',
+                                'name' => 'enabled',
+                                'width' => '80px',
+                                'add' => true,
+                                'edit' => ['type' => 'CheckBox']
+                            ],
+                            [
+                                'caption' => 'Topic',
+                                'name' => 'topic',
+                                'width' => '120px',
+                                'add' => '',
+                                'edit' => ['type' => 'Label']
+                            ],
+                            [
+                                'caption' => 'Description',
+                                'name' => 'description',
+                                'width' => 'auto',
+                                'add' => '',
+                                'edit' => ['type' => 'Label']
+                            ]
+                        ],
+                        'values' => $this->BuildDebugTopicsConfig()
                     ],
                     [
-                        'type' => 'ValidationTextBox',
-                        'name' => 'debug_entity_ids',
-                        'caption' => 'Entity IDs (CSV)'
+                        'type' => 'Label',
+                        'caption' => 'Filter by device/object (Symcon): select an instance to reduce debug output for its mapped variables.'
+                    ],
+                    [
+                        'type' => 'List',
+                        'name' => 'debug_filter_instances',
+                        'caption' => 'Devices / Instances',
+                        'rowCount' => 5,
+                        'add' => true,
+                        'delete' => true,
+                        'columns' => [
+                            [
+                                'caption' => 'Instance',
+                                'name' => 'instance_id',
+                                'width' => 'auto',
+                                'add' => 0,
+                                'edit' => [
+                                    'type' => 'SelectInstance'
+                                ]
+                            ]
+                        ]
                     ],
                     [
                         'type' => 'ValidationTextBox',
@@ -5773,9 +6738,29 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                         'caption' => 'Var/Object IDs (CSV)'
                     ],
                     [
-                        'type' => 'ValidationTextBox',
-                        'name' => 'debug_client_ips',
-                        'caption' => 'Client IPs (CSV)'
+                        'type' => 'Label',
+                        'caption' => 'Client IP filter: select one or more Remote client IPs to reduce debug output.'
+                    ],
+                    [
+                        'type' => 'List',
+                        'name' => 'debug_client_ips_cfg',
+                        'caption' => 'Client IPs',
+                        'rowCount' => 5,
+                        'add' => true,
+                        'delete' => true,
+                        'columns' => [
+                            [
+                                'caption' => 'Client IP',
+                                'name' => 'ip',
+                                'width' => 'auto',
+                                'add' => '',
+                                'edit' => [
+                                    'type' => 'Select',
+                                    'options' => $this->GetKnownClientIPOptions()
+                                ]
+                            ]
+                        ],
+                        'values' => $this->BuildDebugClientIPsConfig()
                     ],
                     [
                         'type' => 'ValidationTextBox',

@@ -142,4 +142,93 @@ class Entity_Media_Player
     public const REPEAT_OFF = 'off';
     public const REPEAT_ONE = 'one';
     public const REPEAT_ALL = 'all';
+
+    /**
+     * Maps a supported feature to the attributes required to implement or represent that feature.
+     *
+     * This is used by integrations to automatically resolve variable mappings (e.g. via Ident -> VarID)
+     * for a given feature.
+     *
+     * @param string $featureKey One of the FEATURE_* constants.
+     * @return string[] List of required ATTR_* constants.
+     */
+    public static function featureToAttributes(string $featureKey): array
+    {
+        switch ($featureKey) {
+            // Power
+            case self::FEATURE_ON_OFF:
+            case self::FEATURE_TOGGLE:
+                return [self::ATTR_STATE];
+
+            // Volume / mute
+            case self::FEATURE_VOLUME:
+            case self::FEATURE_VOLUME_UP_DOWN:
+                return [self::ATTR_VOLUME];
+            case self::FEATURE_MUTE_TOGGLE:
+            case self::FEATURE_MUTE:
+            case self::FEATURE_UNMUTE:
+                return [self::ATTR_MUTED];
+
+            // Playback controls
+            case self::FEATURE_PLAY_PAUSE:
+            case self::FEATURE_STOP:
+            case self::FEATURE_NEXT:
+            case self::FEATURE_PREVIOUS:
+            case self::FEATURE_FAST_FORWARD:
+            case self::FEATURE_REWIND:
+            case self::FEATURE_SEEK:
+                // Playback state is the primary state attribute; seek also relies on position.
+                return [self::ATTR_STATE, self::ATTR_MEDIA_POSITION, self::ATTR_MEDIA_DURATION];
+
+            // Playback modes
+            case self::FEATURE_REPEAT:
+                return [self::ATTR_REPEAT];
+            case self::FEATURE_SHUFFLE:
+                return [self::ATTR_SHUFFLE];
+
+            // Now playing metadata
+            case self::FEATURE_MEDIA_DURATION:
+                return [self::ATTR_MEDIA_DURATION];
+            case self::FEATURE_MEDIA_POSITION:
+                return [self::ATTR_MEDIA_POSITION, self::ATTR_MEDIA_POSITION_UPDATED_AT];
+            case self::FEATURE_MEDIA_TITLE:
+                return [self::ATTR_MEDIA_TITLE];
+            case self::FEATURE_MEDIA_ARTIST:
+                return [self::ATTR_MEDIA_ARTIST];
+            case self::FEATURE_MEDIA_ALBUM:
+                return [self::ATTR_MEDIA_ALBUM];
+            case self::FEATURE_MEDIA_IMAGE_URL:
+                return [self::ATTR_MEDIA_IMAGE_URL];
+            case self::FEATURE_MEDIA_TYPE:
+                return [self::ATTR_MEDIA_TYPE];
+
+            // Input / sound mode selection
+            case self::FEATURE_SELECT_SOURCE:
+                return [self::ATTR_SOURCE, self::ATTR_SOURCE_LIST];
+            case self::FEATURE_SELECT_SOUND_MODE:
+                return [self::ATTR_SOUND_MODE, self::ATTR_SOUND_MODE_LIST];
+
+            // Navigation / UI features do not require readable attributes; they are command-only.
+            // Still, keeping ATTR_STATE helps for availability/online state handling.
+            case self::FEATURE_DPAD:
+            case self::FEATURE_NUMPAD:
+            case self::FEATURE_HOME:
+            case self::FEATURE_MENU:
+            case self::FEATURE_CONTEXT_MENU:
+            case self::FEATURE_GUIDE:
+            case self::FEATURE_INFO:
+            case self::FEATURE_COLOR_BUTTONS:
+            case self::FEATURE_CHANNEL_SWITCHER:
+            case self::FEATURE_EJECT:
+            case self::FEATURE_OPEN_CLOSE:
+            case self::FEATURE_AUDIO_TRACK:
+            case self::FEATURE_SUBTITLE:
+            case self::FEATURE_RECORD:
+            case self::FEATURE_SETTINGS:
+                return [self::ATTR_STATE];
+
+            default:
+                return [];
+        }
+    }
 }
