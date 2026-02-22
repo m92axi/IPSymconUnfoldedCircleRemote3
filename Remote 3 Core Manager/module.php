@@ -369,11 +369,24 @@ class Remote3CoreManager extends IPSModuleStrict
     {
         //Never delete this line!
         parent::ApplyChanges();
-        // Register for status changes of the I/O (WebSocket) instance
-        $parentID = IPS_GetInstance($this->InstanceID)['ConnectionID'];
-        if ($parentID > 0) {
-            $this->RegisterMessage($parentID, IM_CHANGESTATUS);
+        // Explicit instance status handling
+        // Default: show "creating" until minimum configuration is present
+        $host = $this->ReadPropertyString('host');
+        $pass = $this->ReadPropertyString('web_config_pass');
+
+        if ($host === '' || $pass === '') {
+            // Not configured yet
+            $this->SetStatus(IS_CREATING);
+        } else {
+            // Config present; mark active for now (we may downgrade later if key creation fails)
+            $this->SetStatus(IS_ACTIVE);
         }
+
+        // Parent monitoring temporarily disabled for stabilization
+        // $parentID = IPS_GetInstance($this->InstanceID)['ConnectionID'];
+        // if ($parentID > 0) {
+        //     $this->RegisterMessage($parentID, IM_CHANGESTATUS);
+        // }
 
         if ($this->GetBuffer('InitialRefreshEnqueued') === '') {
             $this->SetBuffer('InitialRefreshEnqueued', '0');
@@ -386,8 +399,7 @@ class Remote3CoreManager extends IPSModuleStrict
         }
 
         // --- Automatic initial setup when configuration is complete ---
-        $host = $this->ReadPropertyString('host');
-        $pass = $this->ReadPropertyString('web_config_pass');
+        // $host and $pass already read above
 
         if ($host !== '' && $pass !== '') {
             $this->SendDebug(__FUNCTION__, '🚀 Auto setup triggered (host + password present)', 0);
@@ -396,29 +408,8 @@ class Remote3CoreManager extends IPSModuleStrict
             if ($this->EnsureApiKey()) {
                 $this->SendDebug(__FUNCTION__, '✅ API key ensured', 0);
 
-                // 2) Force parent (WebSocket Client) reconfiguration
-                $parentID = IPS_GetInstance($this->InstanceID)['ConnectionID'];
-                if ($parentID > 0) {
-                    $this->SendDebug(__FUNCTION__, '🔧 Applying changes on WebSocket Client: ' . $parentID, 0);
-                    IPS_ApplyChanges($parentID);
-                }
-
-                // 3) Try to activate WebSocket client
-                if ($parentID > 0) {
-                    $parent = IPS_GetInstance($parentID);
-                    if (!$parent['InstanceStatus']) {
-                        $this->SendDebug(__FUNCTION__, '🔌 Attempting to activate WebSocket Client', 0);
-                        IPS_SetInstanceStatus($parentID, IS_ACTIVE);
-                    }
-                }
-
-                // 4) If WebSocket already active, trigger subscriptions + refresh
-                $parentID = IPS_GetInstance($this->InstanceID)['ConnectionID'];
-                if ($parentID > 0 && IPS_GetInstance($parentID)['InstanceStatus'] === IS_ACTIVE) {
-                    $this->SendDebug(__FUNCTION__, '📡 WebSocket active – subscribing and refreshing', 0);
-                    $this->SubscribeToAllEvents();
-                    $this->StartInitialRefresh(true);
-                }
+                // Parent WebSocket manipulation temporarily disabled for stabilization
+                // No automatic ApplyChanges, activation, subscription or refresh here
 
                 // 5) Try icon upload once
                 if (!$this->ReadAttributeBoolean('icon_uploaded')) {
@@ -427,6 +418,8 @@ class Remote3CoreManager extends IPSModuleStrict
                 }
             } else {
                 $this->SendDebug(__FUNCTION__, '❌ API key could not be ensured during auto setup', 0);
+                // Keep instance active (config is present). WS parent may still be connected; we will retry later.
+                $this->SetStatus(IS_ACTIVE);
             }
         }
 
@@ -927,32 +920,9 @@ class Remote3CoreManager extends IPSModuleStrict
         //Never delete this line!
         parent::MessageSink($TimeStamp, $SenderID, $Message, $Data);
 
+        // Parent status handling temporarily disabled
         if ($Message === IM_CHANGESTATUS) {
-            $newStatus = (int)$Data[0];
-            $this->SendDebug(__FUNCTION__, "📡 WebSocket Statusänderung von ID $SenderID: Status $newStatus", 0);
-
-            // When connected, subscribe + refresh and reset reconnect state.
-            if ($newStatus === IS_ACTIVE) {
-                $this->SendDebug(__FUNCTION__, '🔄 WebSocket verbunden, automatische Event-Registrierung...', 0);
-                $this->SubscribeToAllEvents();
-                // Trigger initial data refresh once the WebSocket connection becomes active
-                $this->StartInitialRefresh(false);
-
-                // Reset reconnect state
-                $this->SetBuffer('WsReconnectPhase', '0');
-                $this->SetBuffer('WsReconnectAttempts', '0');
-                $this->SetTimerInterval('WsReconnectStep', 0);
-                return;
-            }
-
-            // Reset refresh enqueue flag so next successful connect can enqueue refresh again
-            $this->SetBuffer('InitialRefreshEnqueued', '0');
-
-            // For error states (>= 200 in IP-Symcon), try to self-heal by restarting the WebSocket client.
-            // This helps when the Remote 3 went to standby and the socket ends up stuck.
-            if ($newStatus >= IS_EBASE) {
-                $this->StartWsReconnect('Parent status error: ' . $newStatus);
-            }
+            return;
         }
 
         if ($Message == IPS_KERNELMESSAGE && $Data[0] == KR_READY) {

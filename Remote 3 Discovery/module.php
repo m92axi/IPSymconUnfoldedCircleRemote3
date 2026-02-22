@@ -776,6 +776,7 @@ class Remote3Discovery extends IPSModuleStrict
                             'configuration' => [
                                 'hostname' => $hostname,
                                 'host' => $host,
+                                'model' => $dock['model'],
                                 'port' => (string)($dock['port'] ?? ''),
                                 'ws_path' => (string)($dock['ws_path'] ?? ''),
                                 'ws_port' => (string)($dock['port'] ?? ''),
