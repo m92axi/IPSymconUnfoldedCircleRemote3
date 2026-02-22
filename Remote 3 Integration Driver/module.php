@@ -715,6 +715,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         // For string operations (headers), keep raw 1-byte string
         $payload = $buffer;
 
+
         // Minimal debug (visible without extended_debug)
         $typeLabel = match ($type) {
             self::Socket_Data => 'Data',
