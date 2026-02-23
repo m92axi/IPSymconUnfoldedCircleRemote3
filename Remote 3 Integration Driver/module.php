@@ -4326,7 +4326,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             return null;
         }
 
-        $deviceDef = DeviceRegistry::getDeviceMappingByGUID($guid);
+        $deviceDef = DeviceRegistry::resolveDeviceMapping($guid, $instanceID, null);
         if (!is_array($deviceDef)) {
             $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY, "❌ No DeviceRegistry entry for GUID $guid (instance=$instanceID)", 0);
             return null;
@@ -4542,7 +4542,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
      */
     public function LoadDeviceSearchSuggestions(): void
     {
-        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '🔍 Loading device search suggestions (buttons + lights)', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '🔍 Loading device search suggestions (buttons + devices)', 0);
 
         // Step 1: Buttons (Scripts)
         $rows = $this->BuildButtonScriptSuggestions();
@@ -4567,6 +4567,30 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $mediaRows = $this->ApplyPopupSelectionState('popup_media_suggestions', 'instance_id', $mediaRows);
         $this->UpdateFormField('popup_media_suggestions', 'values', json_encode($mediaRows, JSON_UNESCAPED_SLASHES));
         $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '✅ Media player suggestions loaded: ' . count($mediaRows), 0);
+
+        // Step 5: Climate (Instances)
+        $climateRows = $this->BuildClimateSuggestions();
+        $climateRows = $this->ApplyPopupSelectionState('popup_climate_suggestions', 'instance_id', $climateRows);
+        $this->UpdateFormField('popup_climate_suggestions', 'values', json_encode($climateRows, JSON_UNESCAPED_SLASHES));
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '✅ Climate suggestions loaded: ' . count($climateRows), 0);
+
+        // Step 6: Sensors (Variables)
+        $sensorRows = $this->BuildSensorSuggestions();
+        $sensorRows = $this->ApplyPopupSelectionState('popup_sensor_suggestions', 'var_id', $sensorRows);
+        $this->UpdateFormField('popup_sensor_suggestions', 'values', json_encode($sensorRows, JSON_UNESCAPED_SLASHES));
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '✅ Sensor suggestions loaded: ' . count($sensorRows), 0);
+
+        // Step 7: Remotes (Instances)
+        $remoteRows = $this->BuildRemoteSuggestions();
+        $remoteRows = $this->ApplyPopupSelectionState('popup_remote_suggestions', 'instance_id', $remoteRows);
+        $this->UpdateFormField('popup_remote_suggestions', 'values', json_encode($remoteRows, JSON_UNESCAPED_SLASHES));
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '✅ Remote suggestions loaded: ' . count($remoteRows), 0);
+
+        // Step 8: Switches (Instances)
+        $switchRows = $this->BuildSwitchSuggestions();
+        $switchRows = $this->ApplyPopupSelectionState('popup_switch_suggestions', 'instance_id', $switchRows);
+        $this->UpdateFormField('popup_switch_suggestions', 'values', json_encode($switchRows, JSON_UNESCAPED_SLASHES));
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '✅ Switch suggestions loaded: ' . count($switchRows), 0);
     }
 
     /**
@@ -4621,40 +4645,42 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $rows = [];
 
         if (!class_exists('DeviceRegistry')) {
-            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY, '⚠️ DeviceRegistry class not found – cannot build light suggestions', 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                '⚠️ DeviceRegistry class not found – cannot build light suggestions', 0);
             return $rows;
         }
 
         $devices = DeviceRegistry::getSupportedDevices();
-        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '🔎 Registry entries total: ' . (is_array($devices) ? count($devices) : 0), 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+            '🔎 Registry entries total: ' . (is_array($devices) ? count($devices) : 0), 0);
+
         if (!is_array($devices)) {
             return $rows;
         }
 
+        // Collect unique GUIDs that have at least one light mapping.
+        $lightGuids = [];
         foreach ($devices as $def) {
             if (!is_array($def)) {
                 continue;
             }
-            if (($def['device_type'] ?? '') !== 'light') {
+            if (($def['device_type'] ?? '') !== DeviceRegistry::DEVICE_TYPE_LIGHT) {
                 continue;
             }
-
-            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '💡 Checking light registry entry: ' . json_encode($def), 0);
-
-            $moduleGuid = (string)($def['guid'] ?? '');
-            if ($moduleGuid === '') {
-                continue;
+            $g = trim((string)($def['guid'] ?? ''));
+            if ($g !== '') {
+                $lightGuids[strtoupper($g)] = $g;
             }
+        }
 
-            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '🔍 Searching instances for GUID: ' . $moduleGuid, 0);
+        if (empty($lightGuids)) {
+            return $rows;
+        }
 
-            $registryName = (string)($def['name'] ?? 'Light');
-            $manufacturer = (string)($def['manufacturer'] ?? '');
-            $tag = trim(($manufacturer !== '' ? ($manufacturer . ' ') : '') . $registryName);
-            if ($tag === '') {
-                $tag = 'Light';
-            }
+        $preferredType = DeviceRegistry::DEVICE_TYPE_LIGHT;
+        $seenInstanceIds = [];
 
+        foreach ($lightGuids as $moduleGuid) {
             // Find instances by module GUID
             $instanceIDs = [];
             try {
@@ -4662,15 +4688,36 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             } catch (Throwable $e) {
                 $instanceIDs = [];
             }
-            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '📦 Instances found for GUID ' . $moduleGuid . ': ' . (is_array($instanceIDs) ? count($instanceIDs) : 0), 0);
+
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                '📦 Instances found for GUID ' . $moduleGuid . ': ' . (is_array($instanceIDs) ? count($instanceIDs) : 0), 0);
+
             if (!is_array($instanceIDs) || empty($instanceIDs)) {
                 continue;
             }
 
             foreach ($instanceIDs as $iid) {
-                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '➡️ Evaluating instance ID: ' . $iid, 0);
                 if (!is_int($iid) || !@IPS_InstanceExists($iid)) {
                     continue;
+                }
+
+                if (isset($seenInstanceIds[$iid])) {
+                    continue;
+                }
+
+                // Resolve best mapping for this concrete instance (supports duplicate GUIDs)
+                $deviceDef = DeviceRegistry::resolveDeviceMapping($moduleGuid, $iid, $preferredType);
+
+                // Filter: only real lights
+                if (!is_array($deviceDef) || (($deviceDef['device_type'] ?? '') !== DeviceRegistry::DEVICE_TYPE_LIGHT)) {
+                    continue;
+                }
+
+                $registryName = (string)($deviceDef['name'] ?? 'Light');
+                $manufacturer = (string)($deviceDef['manufacturer'] ?? '');
+                $tag = trim(($manufacturer !== '' ? ($manufacturer . ' ') : '') . $registryName);
+                if ($tag === '') {
+                    $tag = 'Light';
                 }
 
                 $instName = (string)@IPS_GetName($iid);
@@ -4686,6 +4733,8 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                     'instance_id' => $iid,
                     'registry_name' => $registryName
                 ];
+
+                $seenInstanceIds[$iid] = true;
             }
         }
 
@@ -4718,27 +4767,29 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             return $rows;
         }
 
+        // Collect unique GUIDs that have at least one media_player mapping.
+        $mediaGuids = [];
         foreach ($devices as $def) {
             if (!is_array($def)) {
                 continue;
             }
-
-            if (($def['device_type'] ?? '') !== 'media_player') {
+            if (($def['device_type'] ?? '') !== DeviceRegistry::DEVICE_TYPE_MEDIA_PLAYER) {
                 continue;
             }
-
-            $moduleGuid = (string)($def['guid'] ?? '');
-            if ($moduleGuid === '') {
-                continue;
+            $g = trim((string)($def['guid'] ?? ''));
+            if ($g !== '') {
+                $mediaGuids[strtoupper($g)] = $g;
             }
+        }
 
-            $registryName = (string)($def['name'] ?? 'Media Player');
-            $manufacturer = (string)($def['manufacturer'] ?? '');
-            $tag = trim(($manufacturer !== '' ? ($manufacturer . ' ') : '') . $registryName);
-            if ($tag === '') {
-                $tag = 'Media Player';
-            }
+        if (empty($mediaGuids)) {
+            return $rows;
+        }
 
+        $preferredType = DeviceRegistry::DEVICE_TYPE_MEDIA_PLAYER;
+        $seenInstanceIds = [];
+
+        foreach ($mediaGuids as $moduleGuid) {
             // Find instances by module GUID
             $instanceIDs = [];
             try {
@@ -4756,6 +4807,25 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                     continue;
                 }
 
+                if (isset($seenInstanceIds[$iid])) {
+                    continue;
+                }
+
+                // Resolve best mapping for this concrete instance (supports duplicate GUIDs)
+                $deviceDef = DeviceRegistry::resolveDeviceMapping($moduleGuid, $iid, $preferredType);
+
+                // Filter: only real media players
+                if (!is_array($deviceDef) || (($deviceDef['device_type'] ?? '') !== DeviceRegistry::DEVICE_TYPE_MEDIA_PLAYER)) {
+                    continue;
+                }
+
+                $registryName = (string)($deviceDef['name'] ?? 'Media Player');
+                $manufacturer = (string)($deviceDef['manufacturer'] ?? '');
+                $tag = trim(($manufacturer !== '' ? ($manufacturer . ' ') : '') . $registryName);
+                if ($tag === '') {
+                    $tag = 'Media Player';
+                }
+
                 $instName = (string)@IPS_GetName($iid);
                 $path = $this->GetObjectPath($iid);
 
@@ -4769,6 +4839,8 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                     'instance_id' => $iid,
                     'registry_name' => $registryName
                 ];
+
+                $seenInstanceIds[$iid] = true;
             }
         }
 
@@ -4801,25 +4873,232 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             return $rows;
         }
 
+        // 1) Unique GUIDs that have at least one cover mapping
+        $coverGuids = [];
+        foreach ($devices as $def) {
+            if (!is_array($def)) continue;
+            if (($def['device_type'] ?? '') !== DeviceRegistry::DEVICE_TYPE_COVER) continue;
+
+            $g = trim((string)($def['guid'] ?? ''));
+            if ($g !== '') {
+                $coverGuids[strtoupper($g)] = $g;
+            }
+        }
+
+        if (empty($coverGuids)) {
+            return $rows;
+        }
+
+        $preferredType = DeviceRegistry::DEVICE_TYPE_COVER;
+
+        // 2) Avoid duplicates (important when multiple cover entries share same GUID)
+        $seenInstanceIds = [];
+
+        // 3) Iterate instances and resolve per instance
+        foreach ($coverGuids as $moduleGuid) {
+
+            $instanceIDs = [];
+            try {
+                $instanceIDs = @IPS_GetInstanceListByModuleID($moduleGuid);
+            } catch (Throwable $e) {
+                $instanceIDs = [];
+            }
+
+            if (!is_array($instanceIDs) || empty($instanceIDs)) {
+                continue;
+            }
+
+            foreach ($instanceIDs as $iid) {
+                if (!is_int($iid) || !@IPS_InstanceExists($iid)) continue;
+                if (isset($seenInstanceIds[$iid])) continue;
+
+                // Resolve mapping for this concrete instance (supports duplicate GUIDs)
+                $deviceDef = null;
+                $deviceDef = DeviceRegistry::resolveDeviceMapping($moduleGuid, $iid, $preferredType);
+
+                // Filter: only real covers
+                if (!is_array($deviceDef) || (($deviceDef['device_type'] ?? '') !== DeviceRegistry::DEVICE_TYPE_COVER)) {
+                    continue;
+                }
+
+                $registryName = (string)($deviceDef['name'] ?? 'Cover');
+                $manufacturer = (string)($deviceDef['manufacturer'] ?? '');
+                $tag = trim(($manufacturer !== '' ? ($manufacturer . ' ') : '') . $registryName);
+                if ($tag === '') $tag = 'Cover';
+
+                $instName = (string)@IPS_GetName($iid);
+                $path = $this->GetObjectPath($iid);
+
+                $label = ($path !== '' ? ($path . ' → ') : '') . $instName;
+                $label = '[' . $tag . '] ' . $label;
+
+                $rows[] = [
+                    'register' => false,
+                    'label' => $label,
+                    'name' => $instName,
+                    'instance_id' => $iid,
+                    'registry_name' => $registryName
+                ];
+
+                $seenInstanceIds[$iid] = true;
+            }
+        }
+
+        usort($rows, function ($a, $b) {
+            return strcmp((string)($a['label'] ?? ''), (string)($b['label'] ?? ''));
+        });
+
+        return $rows;
+    }
+
+    /**
+     * Build suggestions list for "Climate" devices.
+     * Uses DeviceRegistry definitions (module GUID) to find matching instances.
+     */
+    private function BuildClimateSuggestions(): array
+    {
+        $rows = [];
+
+        if (!class_exists('DeviceRegistry')) {
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                '⚠️ DeviceRegistry class not found – cannot build climate suggestions', 0);
+            return $rows;
+        }
+
+        $devices = DeviceRegistry::getSupportedDevices();
+        if (!is_array($devices)) {
+            return $rows;
+        }
+
+        $preferredType = defined('DeviceRegistry::DEVICE_TYPE_CLIMATE') ? DeviceRegistry::DEVICE_TYPE_CLIMATE : 'climate';
+
+        // Collect unique GUIDs that have at least one climate mapping.
+        $guids = [];
         foreach ($devices as $def) {
             if (!is_array($def)) {
                 continue;
             }
+            if (($def['device_type'] ?? '') !== $preferredType) {
+                continue;
+            }
+            $g = trim((string)($def['guid'] ?? ''));
+            if ($g !== '') {
+                $guids[strtoupper($g)] = $g;
+            }
+        }
 
-            if (($def['device_type'] ?? '') !== 'cover') {
+        if (empty($guids)) {
+            return $rows;
+        }
+
+        $seen = [];
+
+        foreach ($guids as $moduleGuid) {
+            $instanceIDs = [];
+            try {
+                $instanceIDs = @IPS_GetInstanceListByModuleID($moduleGuid);
+            } catch (Throwable $e) {
+                $instanceIDs = [];
+            }
+
+            if (!is_array($instanceIDs) || empty($instanceIDs)) {
                 continue;
             }
 
-            $moduleGuid = (string)($def['guid'] ?? '');
+            foreach ($instanceIDs as $iid) {
+                if (!is_int($iid) || !@IPS_InstanceExists($iid)) {
+                    continue;
+                }
+                if (isset($seen[$iid])) {
+                    continue;
+                }
+
+                $deviceDef = DeviceRegistry::resolveDeviceMapping($moduleGuid, $iid, $preferredType);
+                if (!is_array($deviceDef) || (($deviceDef['device_type'] ?? '') !== $preferredType)) {
+                    continue;
+                }
+
+                $registryName = (string)($deviceDef['name'] ?? 'Climate');
+                $manufacturer = (string)($deviceDef['manufacturer'] ?? '');
+                $tag = trim(($manufacturer !== '' ? ($manufacturer . ' ') : '') . $registryName);
+                if ($tag === '') {
+                    $tag = 'Climate';
+                }
+
+                $instName = (string)@IPS_GetName($iid);
+                $path = $this->GetObjectPath($iid);
+                $label = ($path !== '' ? ($path . ' → ') : '') . $instName;
+                $label = '[' . $tag . '] ' . $label;
+
+                $rows[] = [
+                    'register' => false,
+                    'label' => $label,
+                    'name' => $instName,
+                    'instance_id' => $iid,
+                    'registry_name' => $registryName
+                ];
+
+                $seen[$iid] = true;
+            }
+        }
+
+        usort($rows, function ($a, $b) {
+            return strcmp((string)($a['label'] ?? ''), (string)($b['label'] ?? ''));
+        });
+
+        return $rows;
+    }
+
+    /**
+     * Build suggestions list for "Sensor" devices.
+     * IMPORTANT: Remote 3 has a 1-sensor-1-value concept.
+     * Symcon instances may expose multiple sensor values (multiple child variables).
+     * Therefore we list ONE ROW PER SENSOR VARIABLE (per Ident/VarID).
+     */
+    private function BuildSensorSuggestions(): array
+    {
+        $rows = [];
+
+        if (!class_exists('DeviceRegistry')) {
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                '⚠️ DeviceRegistry class not found – cannot build sensor suggestions', 0);
+            return $rows;
+        }
+
+        $devices = DeviceRegistry::getSupportedDevices();
+        if (!is_array($devices)) {
+            return $rows;
+        }
+
+        $preferredType = defined('DeviceRegistry::DEVICE_TYPE_SENSOR') ? DeviceRegistry::DEVICE_TYPE_SENSOR : 'sensor';
+
+        // Build an index of sensor definitions per module GUID.
+        $defsByGuid = [];
+        foreach ($devices as $def) {
+            if (!is_array($def)) {
+                continue;
+            }
+            if (($def['device_type'] ?? '') !== $preferredType) {
+                continue;
+            }
+            $g = trim((string)($def['guid'] ?? ''));
+            if ($g === '') {
+                continue;
+            }
+            $defsByGuid[strtoupper($g)][] = $def;
+        }
+
+        if (empty($defsByGuid)) {
+            return $rows;
+        }
+
+        $seenVarIds = [];
+
+        foreach ($defsByGuid as $moduleGuidUpper => $defs) {
+            $moduleGuid = (string)($defs[0]['guid'] ?? '');
             if ($moduleGuid === '') {
-                continue;
-            }
-
-            $registryName = (string)($def['name'] ?? 'Cover');
-            $manufacturer = (string)($def['manufacturer'] ?? '');
-            $tag = trim(($manufacturer !== '' ? ($manufacturer . ' ') : '') . $registryName);
-            if ($tag === '') {
-                $tag = 'Cover';
+                // fallback to upper key
+                $moduleGuid = $moduleGuidUpper;
             }
 
             // Find instances by module GUID
@@ -4842,6 +5121,180 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 $instName = (string)@IPS_GetName($iid);
                 $path = $this->GetObjectPath($iid);
 
+                // For each registry def, check via matcher, and create one row per matching ident.
+                foreach ($defs as $deviceDef) {
+                    if (!is_array($deviceDef)) {
+                        continue;
+                    }
+
+                    $attrs = $deviceDef['attributes'] ?? null;
+                    if (!is_array($attrs)) {
+                        continue;
+                    }
+
+                    // Determine the value-ident for this def (Netatmo uses ATTR_VALUE => Ident like 'Temperature').
+                    $valueIdent = '';
+                    if (class_exists('Entity_Sensor') && defined('Entity_Sensor::ATTR_VALUE')) {
+                        $valueIdent = trim((string)($attrs[Entity_Sensor::ATTR_VALUE] ?? ''));
+                    }
+                    if ($valueIdent === '') {
+                        // Fallback key
+                        $valueIdent = trim((string)($attrs['value'] ?? ''));
+                    }
+
+                    // Match filter via encapsulated matcher
+                    if (!$this->DoesSensorDefinitionMatchInstance($deviceDef, $iid)) {
+                        continue;
+                    }
+
+                    if ($valueIdent === '') {
+                        continue;
+                    }
+
+                    $varId = @IPS_GetObjectIDByIdent($valueIdent, $iid);
+                    if (!$varId || !@IPS_VariableExists($varId)) {
+                        continue;
+                    }
+
+                    $varId = (int)$varId;
+                    if (isset($seenVarIds[$varId])) {
+                        continue;
+                    }
+
+                    // Unit: prefer registry literal unit (unit:...), else infer from profile.
+                    $unit = '';
+                    if (class_exists('Entity_Sensor') && defined('Entity_Sensor::ATTR_UNIT')) {
+                        try {
+                            $u = DeviceRegistry::ResolveFeatureVarID(DeviceRegistry::DEVICE_TYPE_SENSOR, $attrs, Entity_Sensor::ATTR_UNIT);
+                            if (is_string($u)) {
+                                $unit = trim($u);
+                            }
+                        } catch (Throwable $e) {
+                            $unit = '';
+                        }
+                    }
+                    if ($unit === '') {
+                        $unit = $this->GuessUnitForVariable($varId);
+                    }
+
+                    // Sensor type: prefer custom_sub_type (Netatmo), else device_sub_type, else 'custom'
+                    $sensorType = trim((string)($deviceDef['custom_sub_type'] ?? ($deviceDef['device_sub_type'] ?? 'custom')));
+                    if ($sensorType === '') {
+                        $sensorType = 'custom';
+                    }
+
+                    $registryName = (string)($deviceDef['name'] ?? 'Sensor');
+                    $manufacturer = (string)($deviceDef['manufacturer'] ?? '');
+                    $tag = trim(($manufacturer !== '' ? ($manufacturer . ' ') : '') . $registryName);
+                    if ($tag === '') {
+                        $tag = 'Sensor';
+                    }
+
+                    $varName = (string)@IPS_GetName($varId);
+
+                    // Label shows instance path + instance + variable
+                    $base = ($path !== '' ? ($path . ' → ') : '') . $instName . ' → ' . $varName;
+                    $label = '[' . $tag . '] ' . $base;
+
+                    $rows[] = [
+                        'register' => false,
+                        'label' => $label,
+                        'name' => $varName,
+                        'instance_id' => (int)$iid,
+                        'var_id' => (int)$varId,
+                        'sensor_type' => (string)$sensorType,
+                        'unit' => (string)$unit,
+                        'registry_name' => $registryName
+                    ];
+
+                    $seenVarIds[$varId] = true;
+                }
+            }
+        }
+
+        // Sort by label for a stable UI
+        usort($rows, function ($a, $b) {
+            return strcmp((string)($a['label'] ?? ''), (string)($b['label'] ?? ''));
+        });
+
+        return $rows;
+    }
+
+    /**
+     * Build suggestions list for "Remote" devices.
+     * Uses DeviceRegistry definitions (module GUID) to find matching instances.
+     */
+    private function BuildRemoteSuggestions(): array
+    {
+        $rows = [];
+
+        if (!class_exists('DeviceRegistry')) {
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                '⚠️ DeviceRegistry class not found – cannot build remote suggestions', 0);
+            return $rows;
+        }
+
+        $devices = DeviceRegistry::getSupportedDevices();
+        if (!is_array($devices)) {
+            return $rows;
+        }
+
+        $preferredType = defined('DeviceRegistry::DEVICE_TYPE_REMOTE') ? DeviceRegistry::DEVICE_TYPE_REMOTE : 'remote';
+
+        $guids = [];
+        foreach ($devices as $def) {
+            if (!is_array($def)) {
+                continue;
+            }
+            if (($def['device_type'] ?? '') !== $preferredType) {
+                continue;
+            }
+            $g = trim((string)($def['guid'] ?? ''));
+            if ($g !== '') {
+                $guids[strtoupper($g)] = $g;
+            }
+        }
+
+        if (empty($guids)) {
+            return $rows;
+        }
+
+        $seen = [];
+
+        foreach ($guids as $moduleGuid) {
+            $instanceIDs = [];
+            try {
+                $instanceIDs = @IPS_GetInstanceListByModuleID($moduleGuid);
+            } catch (Throwable $e) {
+                $instanceIDs = [];
+            }
+
+            if (!is_array($instanceIDs) || empty($instanceIDs)) {
+                continue;
+            }
+
+            foreach ($instanceIDs as $iid) {
+                if (!is_int($iid) || !@IPS_InstanceExists($iid)) {
+                    continue;
+                }
+                if (isset($seen[$iid])) {
+                    continue;
+                }
+
+                $deviceDef = DeviceRegistry::resolveDeviceMapping($moduleGuid, $iid, $preferredType);
+                if (!is_array($deviceDef) || (($deviceDef['device_type'] ?? '') !== $preferredType)) {
+                    continue;
+                }
+
+                $registryName = (string)($deviceDef['name'] ?? 'Remote');
+                $manufacturer = (string)($deviceDef['manufacturer'] ?? '');
+                $tag = trim(($manufacturer !== '' ? ($manufacturer . ' ') : '') . $registryName);
+                if ($tag === '') {
+                    $tag = 'Remote';
+                }
+
+                $instName = (string)@IPS_GetName($iid);
+                $path = $this->GetObjectPath($iid);
                 $label = ($path !== '' ? ($path . ' → ') : '') . $instName;
                 $label = '[' . $tag . '] ' . $label;
 
@@ -4852,10 +5305,108 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                     'instance_id' => $iid,
                     'registry_name' => $registryName
                 ];
+
+                $seen[$iid] = true;
             }
         }
 
-        // Sort by label for stable UI
+        usort($rows, function ($a, $b) {
+            return strcmp((string)($a['label'] ?? ''), (string)($b['label'] ?? ''));
+        });
+
+        return $rows;
+    }
+
+    /**
+     * Build suggestions list for "Switch" devices.
+     * Uses DeviceRegistry definitions (module GUID) to find matching instances.
+     */
+    private function BuildSwitchSuggestions(): array
+    {
+        $rows = [];
+
+        if (!class_exists('DeviceRegistry')) {
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                '⚠️ DeviceRegistry class not found – cannot build switch suggestions', 0);
+            return $rows;
+        }
+
+        $devices = DeviceRegistry::getSupportedDevices();
+        if (!is_array($devices)) {
+            return $rows;
+        }
+
+        $preferredType = defined('DeviceRegistry::DEVICE_TYPE_SWITCH') ? DeviceRegistry::DEVICE_TYPE_SWITCH : 'switch';
+
+        $guids = [];
+        foreach ($devices as $def) {
+            if (!is_array($def)) {
+                continue;
+            }
+            if (($def['device_type'] ?? '') !== $preferredType) {
+                continue;
+            }
+            $g = trim((string)($def['guid'] ?? ''));
+            if ($g !== '') {
+                $guids[strtoupper($g)] = $g;
+            }
+        }
+
+        if (empty($guids)) {
+            return $rows;
+        }
+
+        $seen = [];
+
+        foreach ($guids as $moduleGuid) {
+            $instanceIDs = [];
+            try {
+                $instanceIDs = @IPS_GetInstanceListByModuleID($moduleGuid);
+            } catch (Throwable $e) {
+                $instanceIDs = [];
+            }
+
+            if (!is_array($instanceIDs) || empty($instanceIDs)) {
+                continue;
+            }
+
+            foreach ($instanceIDs as $iid) {
+                if (!is_int($iid) || !@IPS_InstanceExists($iid)) {
+                    continue;
+                }
+                if (isset($seen[$iid])) {
+                    continue;
+                }
+
+                $deviceDef = DeviceRegistry::resolveDeviceMapping($moduleGuid, $iid, $preferredType);
+                if (!is_array($deviceDef) || (($deviceDef['device_type'] ?? '') !== $preferredType)) {
+                    continue;
+                }
+
+                $registryName = (string)($deviceDef['name'] ?? 'Switch');
+                $manufacturer = (string)($deviceDef['manufacturer'] ?? '');
+                $tag = trim(($manufacturer !== '' ? ($manufacturer . ' ') : '') . $registryName);
+                if ($tag === '') {
+                    $tag = 'Switch';
+                }
+
+                $instName = (string)@IPS_GetName($iid);
+                $path = $this->GetObjectPath($iid);
+                $label = ($path !== '' ? ($path . ' → ') : '') . $instName;
+                $label = '[' . $tag . '] ' . $label;
+
+                $rows[] = [
+                    'register' => false,
+                    'label' => $label,
+                    'name' => $instName,
+                    'instance_id' => $iid,
+                    'registry_name' => $registryName
+                ];
+
+                $seen[$iid] = true;
+            }
+        }
+
         usort($rows, function ($a, $b) {
             return strcmp((string)($a['label'] ?? ''), (string)($b['label'] ?? ''));
         });
@@ -5208,10 +5759,18 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                         continue;
                     }
 
-                    // Some cover integrations may provide a separate control/action variable. If not present, keep 0.
+                    // Some cover integrations may provide a separate control/action variable.
+                    // If not present (common for Homematic IP/HCU where position variable is writable),
+                    // fall back to using the position variable for control.
                     $controlVar = $this->ResolveFeatureVarID($iid, 'control') ?? 0;
                     if ($controlVar && !IPS_VariableExists($controlVar)) {
                         $controlVar = 0;
+                    }
+
+                    if ((int)$controlVar <= 0) {
+                        $controlVar = (int)$positionVar;
+                        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                            "ℹ️ Cover instance $iid: control variable not resolved – using position_var_id=$controlVar as control", 0);
                     }
 
                     $existingCovers[] = [
@@ -5242,91 +5801,248 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 '✅ Selected media player rows: ' . count($mediaSelected), 0);
 
             if (!$mediaSelected) {
-                return;
-            }
+                // continue with next step
+            } else {
+                // existing Media-Player mapping
+                $existingMedia = json_decode((string)$this->ReadPropertyString('media_player_mapping'), true);
+                if (!is_array($existingMedia)) $existingMedia = [];
 
-            // existing Media-Player mapping
-            $existingMedia = json_decode((string)$this->ReadPropertyString('media_player_mapping'), true);
-            if (!is_array($existingMedia)) $existingMedia = [];
-
-            $existingMediaInstanceIds = [];
-            foreach ($existingMedia as $e) {
-                if (is_array($e) && isset($e['instance_id'])) {
-                    $existingMediaInstanceIds[(int)$e['instance_id']] = true;
-                }
-            }
-
-            $addedMedia = 0;
-
-            foreach ($mediaSelected as $s) {
-                $iid = (int)($s['instance_id'] ?? 0);
-                if ($iid <= 0 || !IPS_InstanceExists($iid)) {
-                    continue;
-                }
-                if (isset($existingMediaInstanceIds[$iid])) {
-                    continue;
+                $existingMediaInstanceIds = [];
+                foreach ($existingMedia as $e) {
+                    if (is_array($e) && isset($e['instance_id'])) {
+                        $existingMediaInstanceIds[(int)$e['instance_id']] = true;
+                    }
                 }
 
-                // Determine module GUID of this instance
-                $inst = IPS_GetInstance($iid);
-                $guid = $inst['ModuleInfo']['ModuleID'] ?? '';
+                $addedMedia = 0;
 
-                // Lookup device definition from registry
-                $deviceDef = null;
-                if (class_exists('DeviceRegistry')) {
-                    $deviceDef = DeviceRegistry::getDeviceMappingByGUID((string)$guid);
-                }
-
-                if (!is_array($deviceDef)) {
-                    $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
-                        "⚠️ Skipping media player instance $iid: no DeviceRegistry entry for GUID $guid", 0);
-                    continue;
-                }
-
-                $features = $deviceDef['features'] ?? [];
-                if (!is_array($features)) {
-                    $features = [];
-                }
-
-                $featureRows = [];
-                foreach ($features as $featureKey) {
-                    $featureKey = (string)$featureKey;
-                    if ($featureKey === '') continue;
-
-                    // Uses ResolveFeatureVarID() — you will map features via DeviceRegistry
-                    $varId = $this->ResolveFeatureVarID($iid, $featureKey);
-                    if (!$varId || !IPS_VariableExists($varId)) {
-                        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
-                            "ℹ️ Media player $iid: feature '$featureKey' not resolved (missing ident/var)", 0);
+                foreach ($mediaSelected as $s) {
+                    $iid = (int)($s['instance_id'] ?? 0);
+                    if ($iid <= 0 || !IPS_InstanceExists($iid)) {
+                        continue;
+                    }
+                    if (isset($existingMediaInstanceIds[$iid])) {
                         continue;
                     }
 
-                    $featureRows[] = [
-                        'feature_key' => $featureKey,
-                        'var_id' => (int)$varId
+                    // Determine module GUID of this instance
+                    $inst = IPS_GetInstance($iid);
+                    $guid = $inst['ModuleInfo']['ModuleID'] ?? '';
+
+                    // Lookup device definition from registry
+                    $deviceDef = null;
+                    if (class_exists('DeviceRegistry')) {
+                        $deviceDef = DeviceRegistry::resolveDeviceMapping($guid, $iid, null);
+                    }
+
+                    if (!is_array($deviceDef)) {
+                        $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                            "⚠️ Skipping media player instance $iid: no DeviceRegistry entry for GUID $guid", 0);
+                        continue;
+                    }
+
+                    $features = $deviceDef['features'] ?? [];
+                    if (!is_array($features)) {
+                        $features = [];
+                    }
+
+                    $featureRows = [];
+                    foreach ($features as $featureKey) {
+                        $featureKey = (string)$featureKey;
+                        if ($featureKey === '') continue;
+
+                        // Uses ResolveFeatureVarID() — you will map features via DeviceRegistry
+                        $varId = $this->ResolveFeatureVarID($iid, $featureKey);
+                        if (!$varId || !IPS_VariableExists($varId)) {
+                            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                                "ℹ️ Media player $iid: feature '$featureKey' not resolved (missing ident/var)", 0);
+                            continue;
+                        }
+
+                        $featureRows[] = [
+                            'feature_key' => $featureKey,
+                            'var_id' => (int)$varId
+                        ];
+                    }
+
+                    $existingMedia[] = [
+                        'name' => IPS_GetName($iid),
+                        'instance_id' => $iid,
+                        'features' => $featureRows
                     ];
+
+                    $existingMediaInstanceIds[$iid] = true;
+                    $addedMedia++;
                 }
 
-                $existingMedia[] = [
-                    'name' => IPS_GetName($iid),
-                    'instance_id' => $iid,
-                    'features' => $featureRows
-                ];
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                    '➕ Media players added to mapping: ' . $addedMedia, 0);
 
-                $existingMediaInstanceIds[$iid] = true;
-                $addedMedia++;
+                $this->UpdateFormField('media_player_mapping', 'values', json_encode($existingMedia, JSON_UNESCAPED_SLASHES));
             }
 
+            // -------------------------
+            // Step 5: Sensors
+            // -------------------------
             $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
-                '➕ Media players added to mapping: ' . $addedMedia, 0);
+                '➕ Applying suggested devices (step 5: sensors)', 0);
 
-            $this->UpdateFormField('media_player_mapping', 'values', json_encode($existingMedia, JSON_UNESCAPED_SLASHES));
+            $sensorSelected = $this->ReadSelectedFromPopupCache('popup_sensor_suggestions', 'var_id');
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                '✅ Selected sensor rows: ' . count($sensorSelected), 0);
+
+            if (!$sensorSelected) {
+                // continue with next step
+            } else {
+                // existing Sensor mapping
+                $existingSensors = json_decode((string)$this->ReadPropertyString('sensor_mapping'), true);
+                if (!is_array($existingSensors)) {
+                    $existingSensors = [];
+                }
+
+                // Uniqueness: allow multiple rows per instance if they map to different var_id
+                $existingKeys = [];
+                foreach ($existingSensors as $e) {
+                    if (!is_array($e)) continue;
+                    $iid0 = (int)($e['instance_id'] ?? 0);
+                    $vid0 = (int)($e['var_id'] ?? 0);
+                    if ($iid0 > 0 && $vid0 > 0) {
+                        $existingKeys[$iid0 . ':' . $vid0] = true;
+                    }
+                }
+
+                $addedSensors = 0;
+
+                foreach ($sensorSelected as $s) {
+                    $iid = (int)($s['instance_id'] ?? 0);
+                    $varId = (int)($s['var_id'] ?? 0);
+                    if ($iid <= 0 || !IPS_InstanceExists($iid) || $varId <= 0 || !IPS_VariableExists($varId)) {
+                        continue;
+                    }
+
+                    $unit = trim((string)($s['unit'] ?? ''));
+                    if ($unit === '') {
+                        $unit = $this->GuessUnitForVariable($varId);
+                    }
+
+                    $sensorType = trim((string)($s['sensor_type'] ?? 'custom'));
+                    if ($sensorType === '') {
+                        $sensorType = 'custom';
+                    }
+
+                    $key = $iid . ':' . (int)$varId;
+                    if (isset($existingKeys[$key])) {
+                        continue;
+                    }
+
+                    $existingSensors[] = [
+                        'name' => IPS_GetName($iid),
+                        'instance_id' => $iid,
+                        'var_id' => (int)$varId,
+                        'unit' => (string)$unit,
+                        'sensor_type' => (string)$sensorType
+                    ];
+
+                    $existingKeys[$key] = true;
+                    $addedSensors++;
+                }
+
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                    '➕ Sensors added to mapping: ' . $addedSensors, 0);
+
+                $this->UpdateFormField('sensor_mapping', 'values', json_encode($existingSensors, JSON_UNESCAPED_SLASHES));
+            }
         } catch (Throwable $e) {
             $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_DISCOVERY,
                 '💥 ApplySuggestedDevices crashed: ' . $e->getMessage(), 0);
             $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_DISCOVERY,
                 $e->getTraceAsString(), 0);
         }
+    }
+
+    /**
+     * Checks whether a sensor registry definition matches a given instance.
+     * Uses match.required_child_idents if present.
+     * A definition matches if at least one required ident exists in the instance.
+     *
+     * @param array $deviceDef
+     * @param int $instanceID
+     * @return bool
+     */
+    private function DoesSensorDefinitionMatchInstance(array $deviceDef, int $instanceID): bool
+    {
+        if ($instanceID <= 0 || !@IPS_InstanceExists($instanceID)) {
+            return false;
+        }
+
+        $match = $deviceDef['match'] ?? null;
+        if (!is_array($match)) {
+            // No match restrictions defined → accept definition
+            return true;
+        }
+
+        $required = $match['required_child_idents'] ?? [];
+        if (!is_array($required) || empty($required)) {
+            // No required idents defined → accept definition
+            return true;
+        }
+
+        foreach ($required as $ident) {
+            $ident = trim((string)$ident);
+            if ($ident === '') {
+                continue;
+            }
+
+            $varId = @IPS_GetObjectIDByIdent($ident, $instanceID);
+            if ($varId && @IPS_VariableExists($varId)) {
+                // At least one required ident exists → definition matches
+                return true;
+            }
+        }
+
+        // None of the required idents found → definition does not match
+        return false;
+    }
+
+    /**
+     * Try to infer a unit from a variable profile (Suffix/Prefix).
+     * Returns empty string if none found.
+     */
+    private function GuessUnitForVariable(int $varId): string
+    {
+        if ($varId <= 0 || !@IPS_VariableExists($varId)) {
+            return '';
+        }
+
+        $v = @IPS_GetVariable($varId);
+        if (!is_array($v)) {
+            return '';
+        }
+
+        // Prefer custom profile if present
+        $profile = trim((string)($v['VariableCustomProfile'] ?? ''));
+        if ($profile === '') {
+            $profile = trim((string)($v['VariableProfile'] ?? ''));
+        }
+        if ($profile === '') {
+            return '';
+        }
+
+        $p = null;
+        try {
+            $p = @IPS_GetVariableProfile($profile);
+        } catch (Throwable $e) {
+            $p = null;
+        }
+
+        if (!is_array($p)) {
+            return '';
+        }
+
+        $suffix = trim((string)($p['Suffix'] ?? ''));
+        $prefix = trim((string)($p['Prefix'] ?? ''));
+
+        return $suffix !== '' ? $suffix : ($prefix !== '' ? $prefix : '');
     }
 
     /**
@@ -6550,7 +7266,16 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                                     ],
                                     'visible' => false
                                 ]
-                            ]
+                            ],
+                            [
+                                'caption' => 'Unit',
+                                'name' => 'unit',
+                                'width' => '200px',
+                                'add' => '',
+                                'edit' => [
+                                    'type' => 'ValidationTextBox'
+                                ]
+                            ],
                         ]
                     ]
                 ]
@@ -6833,7 +7558,3 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         return $form;
     }
 }
-
-
-
-

@@ -57,7 +57,8 @@
             "Text filter (substring or regex)": "Textfilter (Substring oder Regex)",
             "Text filter is regex": "Textfilter ist Regex",
             "Log matches only (strict)": "Nur Treffer loggen (strict)",
-            "Throttle (ms, 0=off)": "Throttle (ms, 0=aus)"
+            "Throttle (ms, 0=off)": "Throttle (ms, 0=aus)",
+            "Unit": "Einheit"
         }
     }
 }
