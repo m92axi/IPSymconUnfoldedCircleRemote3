@@ -1163,22 +1163,21 @@ class Remote3CoreManager extends IPSModuleStrict
      *  echo UCR_CallApi($id, 'GET', '/activities?page=1&limit=50');
      *  echo UCR_CallApi($id, 'PUT', '/entities/my_entity/command', '{"entity_id":"my_entity","cmd_id":"power_toggle"}');
      */
-    public function CallApi(string $method, string $endpoint, $params = null): string
+    public function CallApi(string $method, string $endpoint, string $params = ''): string
     {
         $this->SendDebug(__FUNCTION__, 'method=' . $method . ' endpoint=' . $endpoint, 0);
 
-        // Allow params to be passed either as array or as JSON string
+        // In IPSModuleStrict, only simple types are allowed in public methods.
+        // Therefore params must be passed as JSON string.
         $payload = [];
-        if (is_string($params) && trim($params) !== '') {
+
+        if (trim($params) !== '') {
             $decoded = json_decode($params, true);
             if (is_array($decoded)) {
                 $payload = $decoded;
             } else {
-                // Keep raw string in debug, but do not fail hard
                 $this->SendDebug(__FUNCTION__, '⚠️ params JSON could not be decoded, ignoring params', 0);
             }
-        } elseif (is_array($params)) {
-            $payload = $params;
         }
 
         $response = $this->SendRestRequest($method, $endpoint, $payload);

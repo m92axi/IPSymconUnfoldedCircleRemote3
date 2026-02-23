@@ -31,4 +31,30 @@ class Entity_Cover
     public const FEATURE_CLOSE = 'close'; // Supports closing.
     public const FEATURE_STOP = 'stop'; // Supports stopping.
     public const FEATURE_POSITION = 'position'; // Supports setting or reporting cover position.
+
+    /**
+     * Maps a supported cover feature to the UC attributes required to implement it.
+     *
+     * This allows integrations to resolve Symcon variables (via Ident -> VarID)
+     * automatically based on the feature.
+     *
+     * @param string $featureKey One of the FEATURE_* constants.
+     * @return string[] List of required ATTR_* constants.
+     */
+    public static function featureToAttributes(string $featureKey): array
+    {
+        switch ($featureKey) {
+            case self::FEATURE_OPEN:
+            case self::FEATURE_CLOSE:
+            case self::FEATURE_STOP:
+                // For most Symcon integrations, open/close/stop act on position
+                return [self::ATTR_POSITION];
+
+            case self::FEATURE_POSITION:
+                return [self::ATTR_POSITION];
+
+            default:
+                return [];
+        }
+    }
 }
