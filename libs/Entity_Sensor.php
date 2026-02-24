@@ -21,5 +21,7 @@ class Entity_Sensor
     public const DEVICE_CLASS_POWER = 'power'; // Power in watt or kilowatt
     public const DEVICE_CLASS_TEMPERATURE = 'temperature'; // Temperature with automatic °C, °F conversion, depending on remote settings. Use native_unit option if the temperature is measured in °F.
     public const DEVICE_CLASS_VOLTAGE = 'voltage'; // Voltage in volt
+    public const DEVICE_CLASS_BINARY = 'binary'; // Binary sensor. The binary specific device class is stored in the unit attribute.
+
 
 }

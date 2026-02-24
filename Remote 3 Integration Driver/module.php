@@ -300,6 +300,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_VM, '📣 VM_UPDATE synced for ' . count($newIds) . ' variables', 0);
     }
 
+
     /**
      * Ensures that a token exists.
      * Generates a token only once (first-time instance setup) and never overwrites an existing token.
@@ -317,6 +318,22 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
         // If the configuration form is open, reflect the value immediately.
         $this->UpdateFormField('token', 'value', $token);
+    }
+
+    /**
+     * Mask token for logs (avoid leaking secrets).
+     */
+    private function MaskToken(?string $t): string
+    {
+        $t = (string)$t;
+        if ($t === '') {
+            return '(none)';
+        }
+        $len = strlen($t);
+        if ($len <= 8) {
+            return str_repeat('*', $len);
+        }
+        return substr($t, 0, 4) . '…' . substr($t, -4) . " (len=$len)";
     }
 
 
@@ -761,17 +778,30 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         };
         $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, "📡 Socket Type: {$typeLabel} | From: {$clientIP}:{$clientPort} | PayloadLen: " . strlen($payload), 0);
 
-        // Token aus Header extrahieren
+        // Token aus Header extrahieren (nur bis Zeilenende)
         $token = null;
-        if (preg_match('/auth-token:\s*(.+)/i', $payload, $matches)) {
-            $token = trim($matches[1]);
-            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_AUTH, "🔑 Auth token extracted from header: $token", 0);
-        }
+        if (preg_match('/\bauth-token\s*:\s*([^\r\n]+)/i', $payload, $matches)) {
+            $token = trim((string)$matches[1]);
 
-        // Direkt nach Header-Token-Erkennung authentifizieren
-        if (!empty($token)) {
-            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_AUTH, '✅ Authenticating immediately after header token detection', 0);
-            $this->authenticateClient($clientIP, $clientPort, $token);
+            $storedToken = (string)$this->ReadAttributeString('token');
+            $hasStored = ($storedToken !== '');
+            $match = ($token !== '' && $hasStored && hash_equals($storedToken, $token));
+
+            $this->Debug(
+                __FUNCTION__,
+                $match ? self::LV_INFO : self::LV_WARN,
+                self::TOPIC_AUTH,
+                '🔑 Auth token extracted from header: remote=' . $this->MaskToken($token) . ' local=' . $this->MaskToken($storedToken) . ' match=' . ($match ? '✅' : '❌') . ($hasStored ? '' : ' (local token missing)'),
+                0
+            );
+
+            // Direkt nach Header-Token-Erkennung authentifizieren (nur bei Match)
+            if ($match) {
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_AUTH, '✅ Header token matches → marking client authenticated', 0);
+                $this->authenticateClient($clientIP, $clientPort, $token);
+            } else {
+                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_AUTH, '⛔ Header token missing/mismatch → client NOT authenticated (commands should be blocked later)', 0);
+            }
         }
 
         // Fallback: Token aus JSON extrahieren (nur wenn Payload bereits gültiges UTF-8 ist)
@@ -782,7 +812,23 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             }
             if (is_array($payloadJson) && isset($payloadJson['auth-token'])) {
                 $token = (string)$payloadJson['auth-token'];
-                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_AUTH, "🔑 Auth token extracted from JSON message: $token", 0);
+                $storedToken = (string)$this->ReadAttributeString('token');
+                $hasStored = ($storedToken !== '');
+                $match = ($token !== '' && $hasStored && hash_equals($storedToken, $token));
+                $this->Debug(
+                    __FUNCTION__,
+                    $match ? self::LV_INFO : self::LV_WARN,
+                    self::TOPIC_AUTH,
+                    '🔑 Auth token extracted from JSON message: remote=' . $this->MaskToken($token) . ' local=' . $this->MaskToken($storedToken) . ' match=' . ($match ? '✅' : '❌') . ($hasStored ? '' : ' (local token missing)'),
+                    0
+                );
+
+                if ($match) {
+                    $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_AUTH, '✅ JSON token matches → marking client authenticated', 0);
+                    $this->authenticateClient($clientIP, $clientPort, $token);
+                } else {
+                    $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_AUTH, '⛔ JSON token missing/mismatch → client NOT authenticated (commands should be blocked later)', 0);
+                }
             }
         }
 
@@ -875,9 +921,9 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 break;
 
             case 'setup_driver':
-                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_AUTH, '🛠️ Setup start received', 0);
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_SETUP, '🛠️ setup_driver received → starting interactive setup flow', 0);
                 $this->SendResultOK($reqId, $clientIP, $clientPort);
-                $this->NotifyDriverSetupComplete($clientIP, $clientPort);
+                $this->StartDriverSetupFlow($clientIP, $clientPort);
                 break;
 
             case 'set_driver_user_data':
@@ -1252,20 +1298,38 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
     private function HandleSetDriverUserData_Simple(array $json, int $reqId, string $clientIP, int $clientPort): void
     {
-        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_FORM, '📥 Setup-Daten vom Benutzer empfangen (vereinfachter Flow)', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_SETUP, '📥 set_driver_user_data received (SIMPLE flow)', 0);
 
-        $confirmation = [
-            'kind' => 'resp',
-            'req_id' => $reqId,
-            'code' => 200,
-            'msg' => 'result',
-            'msg_data' => [
-                'setup_action' => [
-                    'type' => 'setup_complete'
-                ]
-            ]
-        ];
-        $this->PushToRemoteClient($confirmation, $clientIP, $clientPort);
+        // Always acknowledge the request
+        $this->SendResultOK($reqId, $clientIP, $clientPort);
+
+        // Parse input values
+        $inputValues = $json['msg_data']['input_values'] ?? [];
+        $tokenUser = (string)($inputValues['token'] ?? '');
+        $tokenStored = (string)$this->ReadAttributeString('token');
+
+        if ($tokenUser === '') {
+            // If nothing provided, still allow user to continue by showing the token page.
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_SETUP, '⚠️ No token provided → requesting input again', 0);
+            $this->RequestTokenAgain($clientIP, $clientPort,
+                'Bitte trage den Token ein oder bestätige den vorausgefüllten Token.',
+                'Please enter the token or confirm the prefilled token.'
+            );
+            return;
+        }
+
+        if ($tokenUser !== $tokenStored) {
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_SETUP, '❌ Token mismatch from user input', 0);
+            $this->RequestTokenAgain($clientIP, $clientPort,
+                'Der eingegebene Token stimmt nicht mit dem Symcon-Token überein. Bitte erneut prüfen.',
+                'The entered token does not match the Symcon token. Please verify and try again.'
+            );
+            return;
+        }
+
+        // Token accepted. Finish setup so the remote creates the integration instance.
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_SETUP, '✅ Token accepted → finishing setup', 0);
+        $this->FinishDriverSetupOK($clientIP, $clientPort);
     }
 
     private function HandleSetDriverUserData_Complex(array $json, int $reqId, string $clientIP, int $clientPort): void
@@ -1288,118 +1352,30 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         // STEP 1: Confirmation
         if (isset($inputValues['step1.confirmation'])) {
             $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_FORM, '➡️ Schritt 1: Einleitung bestätigt', 0);
-
-            $token = $this->ReadAttributeString('token');
-            if (empty($token)) {
-                $this->GenerateToken();
-                $token = $this->ReadAttributeString('token');
-            }
-
-            $nextStep = [
-                'kind' => 'resp',
-                'req_id' => $reqId,
-                'code' => 200,
-                'msg' => 'result',
-                'msg_data' => [
-                    'setup_action' => [
-                        'type' => 'request_user_data',
-                        'input' => [
-                            'title' => ['en' => 'Access Token'],
-                            'settings' => [
-                                [
-                                    'id' => 'step2.token',
-                                    'label' => [
-                                        'en' => 'Token for remote access',
-                                        'de' => 'Token für Remote-Zugriff'
-                                    ],
-                                    'field' => [
-                                        'text' => [
-                                            'value' => $token
-                                        ]
-                                    ]
-                                ]
-                            ]
-                        ]
-                    ]
-                ]
-            ];
-            $this->PushToRemoteClient($nextStep, $clientIP, $clientPort);
-
+            // Always acknowledge set_driver_user_data
+            $this->SendResultOK($reqId, $clientIP, $clientPort);
+            $this->StartDriverSetupFlow($clientIP, $clientPort);
+            return;
         } elseif (isset($inputValues['step2.token'])) {
 
-            $tokenUser = $inputValues['step2.token'];
-            $tokenStored = $this->ReadAttributeString('token');
+            $tokenUser = (string)$inputValues['step2.token'];
+            $tokenStored = (string)$this->ReadAttributeString('token');
+
+            // Always acknowledge set_driver_user_data
+            $this->SendResultOK($reqId, $clientIP, $clientPort);
 
             if ($tokenUser !== $tokenStored) {
-                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_FORM, "❌ Ungültiger Token: $tokenUser", 0);
-
-                $retryStep = [
-                    'kind' => 'resp',
-                    'req_id' => $reqId,
-                    'code' => 200,
-                    'msg' => 'result',
-                    'msg_data' => [
-                        'setup_action' => [
-                            'type' => 'request_user_data',
-                            'input' => [
-                                'title' => ['en' => 'Invalid Token'],
-                                'settings' => [
-                                    [
-                                        'id' => 'step2.token',
-                                        'label' => [
-                                            'en' => 'Invalid token. Please try again:',
-                                            'de' => 'Ungültiger Token. Bitte erneut eingeben:'
-                                        ],
-                                        'field' => [
-                                            'text' => [
-                                                'value' => ''
-                                            ]
-                                        ]
-                                    ]
-                                ]
-                            ]
-                        ]
-                    ]
-                ];
-                $this->PushToRemoteClient($retryStep, $clientIP, $clientPort);
+                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_SETUP, "❌ Invalid token in complex flow: $tokenUser", 0);
+                $this->RequestTokenAgain($clientIP, $clientPort,
+                    'Ungültiger Token. Bitte erneut eingeben oder den vorausgefüllten Token bestätigen.',
+                    'Invalid token. Please re-enter or confirm the prefilled token.'
+                );
                 return;
             }
 
-            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_FORM, "✅ Gültiger Token bestätigt", 0);
-
-            $confirmationStep = [
-                'kind' => 'resp',
-                'req_id' => $reqId,
-                'code' => 200,
-                'msg' => 'result',
-                'msg_data' => [
-                    'setup_action' => [
-                        'type' => 'request_user_data',
-                        'input' => [
-                            'title' => ['en' => 'Token Valid'],
-                            'settings' => [
-                                [
-                                    'id' => 'step3.ready',
-                                    'label' => [
-                                        'en' => 'Token accepted. You can now proceed to device selection.',
-                                        'de' => 'Token akzeptiert. Du kannst jetzt mit der Geräteauswahl fortfahren.'
-                                    ],
-                                    'field' => [
-                                        'label' => [
-                                            'value' => [
-                                                'en' => 'Setup complete – Remote 3 will now request available devices.',
-                                                'de' => 'Setup abgeschlossen – Remote 3 wird nun die verfügbaren Geräte abfragen.'
-                                            ]
-                                        ]
-                                    ]
-                                ]
-                            ]
-                        ]
-                    ]
-                ]
-            ];
-            $this->PushToRemoteClient($confirmationStep, $clientIP, $clientPort);
-
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_SETUP, '✅ Token confirmed (complex flow) → finishing setup', 0);
+            $this->FinishDriverSetupOK($clientIP, $clientPort);
+            return;
         } elseif (isset($inputValues['step3.device_selection']) || isset($inputValues['step3.ready'])) {
 
             $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_FORM, "✅ Geräteauswahl abgeschlossen", 0);
@@ -1418,9 +1394,9 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             $this->PushToRemoteClient($nextStep, $clientIP, $clientPort);
 
         } else {
-
             $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_FORM, '⚠️ Unbekannte oder fehlende Eingabewerte', 0);
             $this->SendResultOK($reqId, $clientIP, $clientPort);
+            $this->StartDriverSetupFlow($clientIP, $clientPort);
         }
     }
 
@@ -1964,6 +1940,151 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             'msg_data' => new stdClass()
         ];
         $this->PushToRemoteClient($response, $clientIP, $clientPort);
+    }
+
+    /**
+     * Start the driver setup flow by requesting a token from the user.
+     * According to the UC integration asyncapi, after confirming `setup_driver`, the driver must emit
+     * `driver_setup_change` events (SETUP/WAIT_USER_ACTION/STOP).
+     */
+    private function StartDriverSetupFlow(string $clientIP, int $clientPort): void
+    {
+        // Ensure we have a token on first setup, but never overwrite an existing one.
+        $this->EnsureTokenInitialized();
+        $token = (string)$this->ReadAttributeString('token');
+
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_SETUP, '➡️ Requesting user token input (prefilled) via driver_setup_change WAIT_USER_ACTION', 0);
+
+        // Ask the remote UI to show a token input page. Prefill with current token so the user can simply click Next.
+        // NOTE: Full background/automatic token provisioning is not supported by the setup flow spec itself;
+        // driver registration via REST would be the fully automatic alternative.
+        $page = [
+            'title' => [
+                'en' => 'Access Token',
+                'de' => 'Zugriffs-Token'
+            ],
+            'settings' => [
+                [
+                    'id' => 'token',
+                    'label' => [
+                        'en' => 'Token for Symcon remote access',
+                        'de' => 'Token für den Remote-Zugriff auf Symcon'
+                    ],
+                    'field' => [
+                        'text' => [
+                            'value' => $token
+                        ]
+                    ]
+                ],
+                [
+                    'id' => 'hint',
+                    'label' => [
+                        'en' => 'Tip',
+                        'de' => 'Hinweis'
+                    ],
+                    'field' => [
+                        'label' => [
+                            'value' => [
+                                'en' => 'If the field is prefilled, just press Next. The Remote will store the token and use it for future connections.',
+                                'de' => 'Wenn das Feld bereits ausgefüllt ist, einfach auf Weiter klicken. Die Remote speichert den Token und nutzt ihn für zukünftige Verbindungen.'
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        ];
+
+        $this->SendDriverSetupChange($clientIP, $clientPort, 'SETUP', 'WAIT_USER_ACTION', [
+            'input' => $page
+        ]);
+    }
+
+    /**
+     * Emit a driver_setup_change event.
+     * @param string $eventType One of: START/SETUP/STOP (spec uses SETUP + STOP here)
+     * @param string $state One of: SETUP/WAIT_USER_ACTION/OK/ERROR
+     */
+    private function SendDriverSetupChange(string $clientIP, int $clientPort, string $eventType, string $state, ?array $requireUserAction = null, string $error = 'NONE'): void
+    {
+        $msgData = [
+            'event_type' => $eventType,
+            'state' => $state
+        ];
+
+        if ($state === 'ERROR') {
+            $msgData['error'] = $error;
+        }
+
+        if ($requireUserAction !== null) {
+            $msgData['require_user_action'] = $requireUserAction;
+        }
+
+        $payload = [
+            'kind' => 'event',
+            'msg' => 'driver_setup_change',
+            'cat' => 'DEVICE',
+            'msg_data' => $msgData
+        ];
+
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_SETUP, '📤 driver_setup_change → ' . json_encode($payload), 0);
+        $this->PushToRemoteClient($payload, $clientIP, $clientPort);
+    }
+
+    /**
+     * Convenience: Finish setup successfully.
+     */
+    private function FinishDriverSetupOK(string $clientIP, int $clientPort): void
+    {
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_SETUP, '✅ Finishing setup: driver_setup_change STOP/OK', 0);
+        $this->SendDriverSetupChange($clientIP, $clientPort, 'STOP', 'OK');
+    }
+
+    /**
+     * Convenience: Ask for token again with an error hint.
+     */
+    private function RequestTokenAgain(string $clientIP, int $clientPort, string $messageDe, string $messageEn): void
+    {
+        $token = (string)$this->ReadAttributeString('token');
+
+        $page = [
+            'title' => [
+                'en' => 'Invalid Token',
+                'de' => 'Ungültiger Token'
+            ],
+            'settings' => [
+                [
+                    'id' => 'error',
+                    'label' => [
+                        'en' => 'Error',
+                        'de' => 'Fehler'
+                    ],
+                    'field' => [
+                        'label' => [
+                            'value' => [
+                                'en' => $messageEn,
+                                'de' => $messageDe
+                            ]
+                        ]
+                    ]
+                ],
+                [
+                    'id' => 'token',
+                    'label' => [
+                        'en' => 'Token for Symcon remote access',
+                        'de' => 'Token für den Remote-Zugriff auf Symcon'
+                    ],
+                    'field' => [
+                        'text' => [
+                            'value' => $token
+                        ]
+                    ]
+                ]
+            ]
+        ];
+
+        $this->SendDriverSetupChange($clientIP, $clientPort, 'SETUP', 'WAIT_USER_ACTION', [
+            'input' => $page
+        ]);
     }
 
     private function NotifyDriverSetupComplete(string $clientIP, int $clientPort): void
@@ -4138,28 +4259,72 @@ class Remote3IntegrationDriver extends IPSModuleStrict
     /**
      * Manuelle Registrierung des Treibers bei Remote-Instanzen
      */
-    public function RegisterDriverManually(): void
+    public function RegisterDriverManually(): array
     {
+        // Refresh cached remote cores list first
         $this->RefreshRemoteCores();
-        $remotes = json_decode($this->ReadAttributeString('remote_cores'), true);
-        $token = $this->ReadAttributeString('token');
 
-        if (!is_array($remotes)) {
-            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_EXT, '❌ No remote instances found', 0);
-            return;
+        $remotes = json_decode($this->ReadAttributeString('remote_cores'), true);
+        if (!is_array($remotes) || empty($remotes)) {
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_EXT, '❌ No remote instances found (remote_cores empty)', 0);
+            return [
+                'ok' => false,
+                'error' => 'No remote instances found',
+                'results' => []
+            ];
         }
 
-        foreach ($remotes as $remote) {
-            $ip = $remote['host'];
-            $apiKey = $remote['api_key'];
+        // Ensure we have a token
+        $this->EnsureTokenInitialized();
+        $token = (string)$this->ReadAttributeString('token');
 
-            $hostValue = trim($this->ReadPropertyString('callback_IP'));
-            if ($hostValue === '') {
-                $hostValue = $ip; // Fallback: Remote IP
+        $hostValue = trim((string)$this->ReadPropertyString('callback_IP'));
+
+        $results = [];
+
+        foreach ($remotes as $remote) {
+            $ip = (string)($remote['host'] ?? '');
+            $apiKey = (string)($remote['api_key'] ?? '');
+
+            if ($ip === '') {
+                $results[] = [
+                    'ok' => false,
+                    'ip' => '',
+                    'url' => '',
+                    'status' => 0,
+                    'error' => 'Remote entry has no host',
+                    'response' => ''
+                ];
+                continue;
             }
 
-            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_EXT, "🔍 Registering driver on $ip (Symcon host: $hostValue)", 0);
-            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_AUTH, "📡 API key present=" . (!empty($apiKey) ? 'yes' : 'no') . " | token present=" . (!empty($token) ? 'yes' : 'no'), 0);
+            if ($hostValue === '') {
+                // Fallback: use Symcon callback host as the remote IP (works only if remote can reach Symcon via that IP)
+                $hostForRemote = $ip;
+            } else {
+                $hostForRemote = $hostValue;
+            }
+
+            $url = "http://{$ip}/api/intg/drivers";
+
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_EXT, "🔍 Registering driver on $ip (driver_url host: $hostForRemote)", 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_AUTH,
+                '📡 API key present=' . (!empty($apiKey) ? 'yes' : 'no') . ' | token=' . (method_exists($this, 'MaskToken') ? $this->MaskToken($token) : (!empty($token) ? '***' : '(none)')),
+                0
+            );
+
+            if ($apiKey === '') {
+                $results[] = [
+                    'ok' => false,
+                    'ip' => $ip,
+                    'url' => $url,
+                    'status' => 0,
+                    'error' => 'Missing api_key for this remote core (Bearer token)',
+                    'response' => ''
+                ];
+                continue;
+            }
+
             $payload = [
                 'driver_id' => 'symcon-unfoldedcircle',
                 'name' => [
@@ -4170,10 +4335,10 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                     'fr' => 'Pilote externe Symcon',
                     'es' => 'Controlador externo de Symcon'
                 ],
-                'driver_url' => 'ws://' . $hostValue . ':9988',
+                'driver_url' => 'ws://' . $hostForRemote . ':9988',
                 'token' => $token,
                 'auth_method' => 'HEADER',
-                'version' => '0.0.1',
+                'version' => '0.5.0',
                 'icon' => 'custom:symcon_icon.png',
                 'enabled' => true,
                 'description' => [
@@ -4189,27 +4354,79 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 'release_date' => '2025-05-19'
             ];
 
+            $jsonPayload = json_encode($payload, JSON_UNESCAPED_SLASHES);
+
             $context = stream_context_create([
                 'http' => [
                     'method' => 'POST',
+                    'ignore_errors' => true, // allow reading body on non-2xx
                     'header' => [
                         'Content-Type: application/json',
                         'Accept: application/json',
                         'Authorization: Bearer ' . $apiKey
                     ],
-                    'content' => json_encode($payload)
+                    'content' => $jsonPayload,
+                    'timeout' => 8
                 ]
             ]);
 
-            $url = "http://{$ip}/api/intg/drivers";
             $response = @file_get_contents($url, false, $context);
 
+            // Determine HTTP status code (if available)
+            $status = 0;
+            if (isset($http_response_header) && is_array($http_response_header)) {
+                foreach ($http_response_header as $h) {
+                    if (preg_match('#^HTTP/\S+\s+(\d{3})#', $h, $m)) {
+                        $status = (int)$m[1];
+                        break;
+                    }
+                }
+            }
+
             if ($response === false) {
-                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_EXT, "❌ POST to $url failed", 0);
+                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_EXT, "❌ POST to $url failed (file_get_contents=false)", 0);
+                $results[] = [
+                    'ok' => false,
+                    'ip' => $ip,
+                    'url' => $url,
+                    'status' => $status,
+                    'error' => 'POST failed (no response body)',
+                    'response' => ''
+                ];
+                continue;
+            }
+
+            $ok = ($status >= 200 && $status < 300);
+            if ($ok) {
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_EXT, "✅ Driver registration succeeded on $ip (HTTP $status)", 0);
             } else {
-                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_EXT, "✅ Driver registration succeeded: $response", 0);
+                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_EXT, "⚠️ Driver registration returned HTTP $status on $ip", 0);
+            }
+
+            // Keep response as raw string; script can json_decode if needed
+            $results[] = [
+                'ok' => $ok,
+                'ip' => $ip,
+                'url' => $url,
+                'status' => $status,
+                'error' => $ok ? '' : 'Non-2xx response',
+                'response' => (string)$response
+            ];
+        }
+
+        $allOk = true;
+        foreach ($results as $r) {
+            if (empty($r['ok'])) {
+                $allOk = false;
+                break;
             }
         }
+
+        return [
+            'ok' => $allOk,
+            'count' => count($results),
+            'results' => $results
+        ];
     }
 
     /**
@@ -4327,7 +4544,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             return null;
         }
 
-        $deviceDef = DeviceRegistry::getDeviceMappingByGUID($guid);
+        $deviceDef = DeviceRegistry::resolveDeviceMapping($guid, $instanceID, null);
         if (!is_array($deviceDef)) {
             $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY, "❌ No DeviceRegistry entry for GUID $guid (instance=$instanceID)", 0);
             return null;
@@ -4543,7 +4760,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
      */
     public function LoadDeviceSearchSuggestions(): void
     {
-        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '🔍 Loading device search suggestions (buttons + lights)', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '🔍 Loading device search suggestions (buttons + devices)', 0);
 
         // Step 1: Buttons (Scripts)
         $rows = $this->BuildButtonScriptSuggestions();
@@ -4568,6 +4785,30 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $mediaRows = $this->ApplyPopupSelectionState('popup_media_suggestions', 'instance_id', $mediaRows);
         $this->UpdateFormField('popup_media_suggestions', 'values', json_encode($mediaRows, JSON_UNESCAPED_SLASHES));
         $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '✅ Media player suggestions loaded: ' . count($mediaRows), 0);
+
+        // Step 5: Climate (Instances)
+        $climateRows = $this->BuildClimateSuggestions();
+        $climateRows = $this->ApplyPopupSelectionState('popup_climate_suggestions', 'instance_id', $climateRows);
+        $this->UpdateFormField('popup_climate_suggestions', 'values', json_encode($climateRows, JSON_UNESCAPED_SLASHES));
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '✅ Climate suggestions loaded: ' . count($climateRows), 0);
+
+        // Step 6: Sensors (Variables)
+        $sensorRows = $this->BuildSensorSuggestions();
+        $sensorRows = $this->ApplyPopupSelectionState('popup_sensor_suggestions', 'var_id', $sensorRows);
+        $this->UpdateFormField('popup_sensor_suggestions', 'values', json_encode($sensorRows, JSON_UNESCAPED_SLASHES));
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '✅ Sensor suggestions loaded: ' . count($sensorRows), 0);
+
+        // Step 7: Remotes (Instances)
+        $remoteRows = $this->BuildRemoteSuggestions();
+        $remoteRows = $this->ApplyPopupSelectionState('popup_remote_suggestions', 'instance_id', $remoteRows);
+        $this->UpdateFormField('popup_remote_suggestions', 'values', json_encode($remoteRows, JSON_UNESCAPED_SLASHES));
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '✅ Remote suggestions loaded: ' . count($remoteRows), 0);
+
+        // Step 8: Switches (Instances)
+        $switchRows = $this->BuildSwitchSuggestions();
+        $switchRows = $this->ApplyPopupSelectionState('popup_switch_suggestions', 'instance_id', $switchRows);
+        $this->UpdateFormField('popup_switch_suggestions', 'values', json_encode($switchRows, JSON_UNESCAPED_SLASHES));
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '✅ Switch suggestions loaded: ' . count($switchRows), 0);
     }
 
     /**
@@ -4622,40 +4863,42 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $rows = [];
 
         if (!class_exists('DeviceRegistry')) {
-            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY, '⚠️ DeviceRegistry class not found – cannot build light suggestions', 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                '⚠️ DeviceRegistry class not found – cannot build light suggestions', 0);
             return $rows;
         }
 
         $devices = DeviceRegistry::getSupportedDevices();
-        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '🔎 Registry entries total: ' . (is_array($devices) ? count($devices) : 0), 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+            '🔎 Registry entries total: ' . (is_array($devices) ? count($devices) : 0), 0);
+
         if (!is_array($devices)) {
             return $rows;
         }
 
+        // Collect unique GUIDs that have at least one light mapping.
+        $lightGuids = [];
         foreach ($devices as $def) {
             if (!is_array($def)) {
                 continue;
             }
-            if (($def['device_type'] ?? '') !== 'light') {
+            if (($def['device_type'] ?? '') !== DeviceRegistry::DEVICE_TYPE_LIGHT) {
                 continue;
             }
-
-            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '💡 Checking light registry entry: ' . json_encode($def), 0);
-
-            $moduleGuid = (string)($def['guid'] ?? '');
-            if ($moduleGuid === '') {
-                continue;
+            $g = trim((string)($def['guid'] ?? ''));
+            if ($g !== '') {
+                $lightGuids[strtoupper($g)] = $g;
             }
+        }
 
-            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '🔍 Searching instances for GUID: ' . $moduleGuid, 0);
+        if (empty($lightGuids)) {
+            return $rows;
+        }
 
-            $registryName = (string)($def['name'] ?? 'Light');
-            $manufacturer = (string)($def['manufacturer'] ?? '');
-            $tag = trim(($manufacturer !== '' ? ($manufacturer . ' ') : '') . $registryName);
-            if ($tag === '') {
-                $tag = 'Light';
-            }
+        $preferredType = DeviceRegistry::DEVICE_TYPE_LIGHT;
+        $seenInstanceIds = [];
 
+        foreach ($lightGuids as $moduleGuid) {
             // Find instances by module GUID
             $instanceIDs = [];
             try {
@@ -4663,15 +4906,36 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             } catch (Throwable $e) {
                 $instanceIDs = [];
             }
-            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '📦 Instances found for GUID ' . $moduleGuid . ': ' . (is_array($instanceIDs) ? count($instanceIDs) : 0), 0);
+
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                '📦 Instances found for GUID ' . $moduleGuid . ': ' . (is_array($instanceIDs) ? count($instanceIDs) : 0), 0);
+
             if (!is_array($instanceIDs) || empty($instanceIDs)) {
                 continue;
             }
 
             foreach ($instanceIDs as $iid) {
-                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, '➡️ Evaluating instance ID: ' . $iid, 0);
                 if (!is_int($iid) || !@IPS_InstanceExists($iid)) {
                     continue;
+                }
+
+                if (isset($seenInstanceIds[$iid])) {
+                    continue;
+                }
+
+                // Resolve best mapping for this concrete instance (supports duplicate GUIDs)
+                $deviceDef = DeviceRegistry::resolveDeviceMapping($moduleGuid, $iid, $preferredType);
+
+                // Filter: only real lights
+                if (!is_array($deviceDef) || (($deviceDef['device_type'] ?? '') !== DeviceRegistry::DEVICE_TYPE_LIGHT)) {
+                    continue;
+                }
+
+                $registryName = (string)($deviceDef['name'] ?? 'Light');
+                $manufacturer = (string)($deviceDef['manufacturer'] ?? '');
+                $tag = trim(($manufacturer !== '' ? ($manufacturer . ' ') : '') . $registryName);
+                if ($tag === '') {
+                    $tag = 'Light';
                 }
 
                 $instName = (string)@IPS_GetName($iid);
@@ -4687,6 +4951,8 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                     'instance_id' => $iid,
                     'registry_name' => $registryName
                 ];
+
+                $seenInstanceIds[$iid] = true;
             }
         }
 
@@ -4719,27 +4985,29 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             return $rows;
         }
 
+        // Collect unique GUIDs that have at least one media_player mapping.
+        $mediaGuids = [];
         foreach ($devices as $def) {
             if (!is_array($def)) {
                 continue;
             }
-
-            if (($def['device_type'] ?? '') !== 'media_player') {
+            if (($def['device_type'] ?? '') !== DeviceRegistry::DEVICE_TYPE_MEDIA_PLAYER) {
                 continue;
             }
-
-            $moduleGuid = (string)($def['guid'] ?? '');
-            if ($moduleGuid === '') {
-                continue;
+            $g = trim((string)($def['guid'] ?? ''));
+            if ($g !== '') {
+                $mediaGuids[strtoupper($g)] = $g;
             }
+        }
 
-            $registryName = (string)($def['name'] ?? 'Media Player');
-            $manufacturer = (string)($def['manufacturer'] ?? '');
-            $tag = trim(($manufacturer !== '' ? ($manufacturer . ' ') : '') . $registryName);
-            if ($tag === '') {
-                $tag = 'Media Player';
-            }
+        if (empty($mediaGuids)) {
+            return $rows;
+        }
 
+        $preferredType = DeviceRegistry::DEVICE_TYPE_MEDIA_PLAYER;
+        $seenInstanceIds = [];
+
+        foreach ($mediaGuids as $moduleGuid) {
             // Find instances by module GUID
             $instanceIDs = [];
             try {
@@ -4757,6 +5025,25 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                     continue;
                 }
 
+                if (isset($seenInstanceIds[$iid])) {
+                    continue;
+                }
+
+                // Resolve best mapping for this concrete instance (supports duplicate GUIDs)
+                $deviceDef = DeviceRegistry::resolveDeviceMapping($moduleGuid, $iid, $preferredType);
+
+                // Filter: only real media players
+                if (!is_array($deviceDef) || (($deviceDef['device_type'] ?? '') !== DeviceRegistry::DEVICE_TYPE_MEDIA_PLAYER)) {
+                    continue;
+                }
+
+                $registryName = (string)($deviceDef['name'] ?? 'Media Player');
+                $manufacturer = (string)($deviceDef['manufacturer'] ?? '');
+                $tag = trim(($manufacturer !== '' ? ($manufacturer . ' ') : '') . $registryName);
+                if ($tag === '') {
+                    $tag = 'Media Player';
+                }
+
                 $instName = (string)@IPS_GetName($iid);
                 $path = $this->GetObjectPath($iid);
 
@@ -4770,6 +5057,8 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                     'instance_id' => $iid,
                     'registry_name' => $registryName
                 ];
+
+                $seenInstanceIds[$iid] = true;
             }
         }
 
@@ -4802,25 +5091,232 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             return $rows;
         }
 
+        // 1) Unique GUIDs that have at least one cover mapping
+        $coverGuids = [];
+        foreach ($devices as $def) {
+            if (!is_array($def)) continue;
+            if (($def['device_type'] ?? '') !== DeviceRegistry::DEVICE_TYPE_COVER) continue;
+
+            $g = trim((string)($def['guid'] ?? ''));
+            if ($g !== '') {
+                $coverGuids[strtoupper($g)] = $g;
+            }
+        }
+
+        if (empty($coverGuids)) {
+            return $rows;
+        }
+
+        $preferredType = DeviceRegistry::DEVICE_TYPE_COVER;
+
+        // 2) Avoid duplicates (important when multiple cover entries share same GUID)
+        $seenInstanceIds = [];
+
+        // 3) Iterate instances and resolve per instance
+        foreach ($coverGuids as $moduleGuid) {
+
+            $instanceIDs = [];
+            try {
+                $instanceIDs = @IPS_GetInstanceListByModuleID($moduleGuid);
+            } catch (Throwable $e) {
+                $instanceIDs = [];
+            }
+
+            if (!is_array($instanceIDs) || empty($instanceIDs)) {
+                continue;
+            }
+
+            foreach ($instanceIDs as $iid) {
+                if (!is_int($iid) || !@IPS_InstanceExists($iid)) continue;
+                if (isset($seenInstanceIds[$iid])) continue;
+
+                // Resolve mapping for this concrete instance (supports duplicate GUIDs)
+                $deviceDef = null;
+                $deviceDef = DeviceRegistry::resolveDeviceMapping($moduleGuid, $iid, $preferredType);
+
+                // Filter: only real covers
+                if (!is_array($deviceDef) || (($deviceDef['device_type'] ?? '') !== DeviceRegistry::DEVICE_TYPE_COVER)) {
+                    continue;
+                }
+
+                $registryName = (string)($deviceDef['name'] ?? 'Cover');
+                $manufacturer = (string)($deviceDef['manufacturer'] ?? '');
+                $tag = trim(($manufacturer !== '' ? ($manufacturer . ' ') : '') . $registryName);
+                if ($tag === '') $tag = 'Cover';
+
+                $instName = (string)@IPS_GetName($iid);
+                $path = $this->GetObjectPath($iid);
+
+                $label = ($path !== '' ? ($path . ' → ') : '') . $instName;
+                $label = '[' . $tag . '] ' . $label;
+
+                $rows[] = [
+                    'register' => false,
+                    'label' => $label,
+                    'name' => $instName,
+                    'instance_id' => $iid,
+                    'registry_name' => $registryName
+                ];
+
+                $seenInstanceIds[$iid] = true;
+            }
+        }
+
+        usort($rows, function ($a, $b) {
+            return strcmp((string)($a['label'] ?? ''), (string)($b['label'] ?? ''));
+        });
+
+        return $rows;
+    }
+
+    /**
+     * Build suggestions list for "Climate" devices.
+     * Uses DeviceRegistry definitions (module GUID) to find matching instances.
+     */
+    private function BuildClimateSuggestions(): array
+    {
+        $rows = [];
+
+        if (!class_exists('DeviceRegistry')) {
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                '⚠️ DeviceRegistry class not found – cannot build climate suggestions', 0);
+            return $rows;
+        }
+
+        $devices = DeviceRegistry::getSupportedDevices();
+        if (!is_array($devices)) {
+            return $rows;
+        }
+
+        $preferredType = defined('DeviceRegistry::DEVICE_TYPE_CLIMATE') ? DeviceRegistry::DEVICE_TYPE_CLIMATE : 'climate';
+
+        // Collect unique GUIDs that have at least one climate mapping.
+        $guids = [];
         foreach ($devices as $def) {
             if (!is_array($def)) {
                 continue;
             }
+            if (($def['device_type'] ?? '') !== $preferredType) {
+                continue;
+            }
+            $g = trim((string)($def['guid'] ?? ''));
+            if ($g !== '') {
+                $guids[strtoupper($g)] = $g;
+            }
+        }
 
-            if (($def['device_type'] ?? '') !== 'cover') {
+        if (empty($guids)) {
+            return $rows;
+        }
+
+        $seen = [];
+
+        foreach ($guids as $moduleGuid) {
+            $instanceIDs = [];
+            try {
+                $instanceIDs = @IPS_GetInstanceListByModuleID($moduleGuid);
+            } catch (Throwable $e) {
+                $instanceIDs = [];
+            }
+
+            if (!is_array($instanceIDs) || empty($instanceIDs)) {
                 continue;
             }
 
-            $moduleGuid = (string)($def['guid'] ?? '');
+            foreach ($instanceIDs as $iid) {
+                if (!is_int($iid) || !@IPS_InstanceExists($iid)) {
+                    continue;
+                }
+                if (isset($seen[$iid])) {
+                    continue;
+                }
+
+                $deviceDef = DeviceRegistry::resolveDeviceMapping($moduleGuid, $iid, $preferredType);
+                if (!is_array($deviceDef) || (($deviceDef['device_type'] ?? '') !== $preferredType)) {
+                    continue;
+                }
+
+                $registryName = (string)($deviceDef['name'] ?? 'Climate');
+                $manufacturer = (string)($deviceDef['manufacturer'] ?? '');
+                $tag = trim(($manufacturer !== '' ? ($manufacturer . ' ') : '') . $registryName);
+                if ($tag === '') {
+                    $tag = 'Climate';
+                }
+
+                $instName = (string)@IPS_GetName($iid);
+                $path = $this->GetObjectPath($iid);
+                $label = ($path !== '' ? ($path . ' → ') : '') . $instName;
+                $label = '[' . $tag . '] ' . $label;
+
+                $rows[] = [
+                    'register' => false,
+                    'label' => $label,
+                    'name' => $instName,
+                    'instance_id' => $iid,
+                    'registry_name' => $registryName
+                ];
+
+                $seen[$iid] = true;
+            }
+        }
+
+        usort($rows, function ($a, $b) {
+            return strcmp((string)($a['label'] ?? ''), (string)($b['label'] ?? ''));
+        });
+
+        return $rows;
+    }
+
+    /**
+     * Build suggestions list for "Sensor" devices.
+     * IMPORTANT: Remote 3 has a 1-sensor-1-value concept.
+     * Symcon instances may expose multiple sensor values (multiple child variables).
+     * Therefore we list ONE ROW PER SENSOR VARIABLE (per Ident/VarID).
+     */
+    private function BuildSensorSuggestions(): array
+    {
+        $rows = [];
+
+        if (!class_exists('DeviceRegistry')) {
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                '⚠️ DeviceRegistry class not found – cannot build sensor suggestions', 0);
+            return $rows;
+        }
+
+        $devices = DeviceRegistry::getSupportedDevices();
+        if (!is_array($devices)) {
+            return $rows;
+        }
+
+        $preferredType = defined('DeviceRegistry::DEVICE_TYPE_SENSOR') ? DeviceRegistry::DEVICE_TYPE_SENSOR : 'sensor';
+
+        // Build an index of sensor definitions per module GUID.
+        $defsByGuid = [];
+        foreach ($devices as $def) {
+            if (!is_array($def)) {
+                continue;
+            }
+            if (($def['device_type'] ?? '') !== $preferredType) {
+                continue;
+            }
+            $g = trim((string)($def['guid'] ?? ''));
+            if ($g === '') {
+                continue;
+            }
+            $defsByGuid[strtoupper($g)][] = $def;
+        }
+
+        if (empty($defsByGuid)) {
+            return $rows;
+        }
+
+        $seenVarIds = [];
+
+        foreach ($defsByGuid as $moduleGuidUpper => $defs) {
+            $moduleGuid = (string)($defs[0]['guid'] ?? '');
             if ($moduleGuid === '') {
-                continue;
-            }
-
-            $registryName = (string)($def['name'] ?? 'Cover');
-            $manufacturer = (string)($def['manufacturer'] ?? '');
-            $tag = trim(($manufacturer !== '' ? ($manufacturer . ' ') : '') . $registryName);
-            if ($tag === '') {
-                $tag = 'Cover';
+                // fallback to upper key
+                $moduleGuid = $moduleGuidUpper;
             }
 
             // Find instances by module GUID
@@ -4843,6 +5339,180 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 $instName = (string)@IPS_GetName($iid);
                 $path = $this->GetObjectPath($iid);
 
+                // For each registry def, check via matcher, and create one row per matching ident.
+                foreach ($defs as $deviceDef) {
+                    if (!is_array($deviceDef)) {
+                        continue;
+                    }
+
+                    $attrs = $deviceDef['attributes'] ?? null;
+                    if (!is_array($attrs)) {
+                        continue;
+                    }
+
+                    // Determine the value-ident for this def (Netatmo uses ATTR_VALUE => Ident like 'Temperature').
+                    $valueIdent = '';
+                    if (class_exists('Entity_Sensor') && defined('Entity_Sensor::ATTR_VALUE')) {
+                        $valueIdent = trim((string)($attrs[Entity_Sensor::ATTR_VALUE] ?? ''));
+                    }
+                    if ($valueIdent === '') {
+                        // Fallback key
+                        $valueIdent = trim((string)($attrs['value'] ?? ''));
+                    }
+
+                    // Match filter via encapsulated matcher
+                    if (!$this->DoesSensorDefinitionMatchInstance($deviceDef, $iid)) {
+                        continue;
+                    }
+
+                    if ($valueIdent === '') {
+                        continue;
+                    }
+
+                    $varId = @IPS_GetObjectIDByIdent($valueIdent, $iid);
+                    if (!$varId || !@IPS_VariableExists($varId)) {
+                        continue;
+                    }
+
+                    $varId = (int)$varId;
+                    if (isset($seenVarIds[$varId])) {
+                        continue;
+                    }
+
+                    // Unit: prefer registry literal unit (unit:...), else infer from profile.
+                    $unit = '';
+                    if (class_exists('Entity_Sensor') && defined('Entity_Sensor::ATTR_UNIT')) {
+                        try {
+                            $u = DeviceRegistry::ResolveFeatureVarID(DeviceRegistry::DEVICE_TYPE_SENSOR, $attrs, Entity_Sensor::ATTR_UNIT);
+                            if (is_string($u)) {
+                                $unit = trim($u);
+                            }
+                        } catch (Throwable $e) {
+                            $unit = '';
+                        }
+                    }
+                    if ($unit === '') {
+                        $unit = $this->GuessUnitForVariable($varId);
+                    }
+
+                    // Sensor type: prefer custom_sub_type (Netatmo), else device_sub_type, else 'custom'
+                    $sensorType = trim((string)($deviceDef['custom_sub_type'] ?? ($deviceDef['device_sub_type'] ?? 'custom')));
+                    if ($sensorType === '') {
+                        $sensorType = 'custom';
+                    }
+
+                    $registryName = (string)($deviceDef['name'] ?? 'Sensor');
+                    $manufacturer = (string)($deviceDef['manufacturer'] ?? '');
+                    $tag = trim(($manufacturer !== '' ? ($manufacturer . ' ') : '') . $registryName);
+                    if ($tag === '') {
+                        $tag = 'Sensor';
+                    }
+
+                    $varName = (string)@IPS_GetName($varId);
+
+                    // Label shows instance path + instance + variable
+                    $base = ($path !== '' ? ($path . ' → ') : '') . $instName . ' → ' . $varName;
+                    $label = '[' . $tag . '] ' . $base;
+
+                    $rows[] = [
+                        'register' => false,
+                        'label' => $label,
+                        'name' => $varName,
+                        'instance_id' => (int)$iid,
+                        'var_id' => (int)$varId,
+                        'sensor_type' => (string)$sensorType,
+                        'unit' => (string)$unit,
+                        'registry_name' => $registryName
+                    ];
+
+                    $seenVarIds[$varId] = true;
+                }
+            }
+        }
+
+        // Sort by label for a stable UI
+        usort($rows, function ($a, $b) {
+            return strcmp((string)($a['label'] ?? ''), (string)($b['label'] ?? ''));
+        });
+
+        return $rows;
+    }
+
+    /**
+     * Build suggestions list for "Remote" devices.
+     * Uses DeviceRegistry definitions (module GUID) to find matching instances.
+     */
+    private function BuildRemoteSuggestions(): array
+    {
+        $rows = [];
+
+        if (!class_exists('DeviceRegistry')) {
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                '⚠️ DeviceRegistry class not found – cannot build remote suggestions', 0);
+            return $rows;
+        }
+
+        $devices = DeviceRegistry::getSupportedDevices();
+        if (!is_array($devices)) {
+            return $rows;
+        }
+
+        $preferredType = defined('DeviceRegistry::DEVICE_TYPE_REMOTE') ? DeviceRegistry::DEVICE_TYPE_REMOTE : 'remote';
+
+        $guids = [];
+        foreach ($devices as $def) {
+            if (!is_array($def)) {
+                continue;
+            }
+            if (($def['device_type'] ?? '') !== $preferredType) {
+                continue;
+            }
+            $g = trim((string)($def['guid'] ?? ''));
+            if ($g !== '') {
+                $guids[strtoupper($g)] = $g;
+            }
+        }
+
+        if (empty($guids)) {
+            return $rows;
+        }
+
+        $seen = [];
+
+        foreach ($guids as $moduleGuid) {
+            $instanceIDs = [];
+            try {
+                $instanceIDs = @IPS_GetInstanceListByModuleID($moduleGuid);
+            } catch (Throwable $e) {
+                $instanceIDs = [];
+            }
+
+            if (!is_array($instanceIDs) || empty($instanceIDs)) {
+                continue;
+            }
+
+            foreach ($instanceIDs as $iid) {
+                if (!is_int($iid) || !@IPS_InstanceExists($iid)) {
+                    continue;
+                }
+                if (isset($seen[$iid])) {
+                    continue;
+                }
+
+                $deviceDef = DeviceRegistry::resolveDeviceMapping($moduleGuid, $iid, $preferredType);
+                if (!is_array($deviceDef) || (($deviceDef['device_type'] ?? '') !== $preferredType)) {
+                    continue;
+                }
+
+                $registryName = (string)($deviceDef['name'] ?? 'Remote');
+                $manufacturer = (string)($deviceDef['manufacturer'] ?? '');
+                $tag = trim(($manufacturer !== '' ? ($manufacturer . ' ') : '') . $registryName);
+                if ($tag === '') {
+                    $tag = 'Remote';
+                }
+
+                $instName = (string)@IPS_GetName($iid);
+                $path = $this->GetObjectPath($iid);
                 $label = ($path !== '' ? ($path . ' → ') : '') . $instName;
                 $label = '[' . $tag . '] ' . $label;
 
@@ -4853,10 +5523,108 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                     'instance_id' => $iid,
                     'registry_name' => $registryName
                 ];
+
+                $seen[$iid] = true;
             }
         }
 
-        // Sort by label for stable UI
+        usort($rows, function ($a, $b) {
+            return strcmp((string)($a['label'] ?? ''), (string)($b['label'] ?? ''));
+        });
+
+        return $rows;
+    }
+
+    /**
+     * Build suggestions list for "Switch" devices.
+     * Uses DeviceRegistry definitions (module GUID) to find matching instances.
+     */
+    private function BuildSwitchSuggestions(): array
+    {
+        $rows = [];
+
+        if (!class_exists('DeviceRegistry')) {
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                '⚠️ DeviceRegistry class not found – cannot build switch suggestions', 0);
+            return $rows;
+        }
+
+        $devices = DeviceRegistry::getSupportedDevices();
+        if (!is_array($devices)) {
+            return $rows;
+        }
+
+        $preferredType = defined('DeviceRegistry::DEVICE_TYPE_SWITCH') ? DeviceRegistry::DEVICE_TYPE_SWITCH : 'switch';
+
+        $guids = [];
+        foreach ($devices as $def) {
+            if (!is_array($def)) {
+                continue;
+            }
+            if (($def['device_type'] ?? '') !== $preferredType) {
+                continue;
+            }
+            $g = trim((string)($def['guid'] ?? ''));
+            if ($g !== '') {
+                $guids[strtoupper($g)] = $g;
+            }
+        }
+
+        if (empty($guids)) {
+            return $rows;
+        }
+
+        $seen = [];
+
+        foreach ($guids as $moduleGuid) {
+            $instanceIDs = [];
+            try {
+                $instanceIDs = @IPS_GetInstanceListByModuleID($moduleGuid);
+            } catch (Throwable $e) {
+                $instanceIDs = [];
+            }
+
+            if (!is_array($instanceIDs) || empty($instanceIDs)) {
+                continue;
+            }
+
+            foreach ($instanceIDs as $iid) {
+                if (!is_int($iid) || !@IPS_InstanceExists($iid)) {
+                    continue;
+                }
+                if (isset($seen[$iid])) {
+                    continue;
+                }
+
+                $deviceDef = DeviceRegistry::resolveDeviceMapping($moduleGuid, $iid, $preferredType);
+                if (!is_array($deviceDef) || (($deviceDef['device_type'] ?? '') !== $preferredType)) {
+                    continue;
+                }
+
+                $registryName = (string)($deviceDef['name'] ?? 'Switch');
+                $manufacturer = (string)($deviceDef['manufacturer'] ?? '');
+                $tag = trim(($manufacturer !== '' ? ($manufacturer . ' ') : '') . $registryName);
+                if ($tag === '') {
+                    $tag = 'Switch';
+                }
+
+                $instName = (string)@IPS_GetName($iid);
+                $path = $this->GetObjectPath($iid);
+                $label = ($path !== '' ? ($path . ' → ') : '') . $instName;
+                $label = '[' . $tag . '] ' . $label;
+
+                $rows[] = [
+                    'register' => false,
+                    'label' => $label,
+                    'name' => $instName,
+                    'instance_id' => $iid,
+                    'registry_name' => $registryName
+                ];
+
+                $seen[$iid] = true;
+            }
+        }
+
         usort($rows, function ($a, $b) {
             return strcmp((string)($a['label'] ?? ''), (string)($b['label'] ?? ''));
         });
@@ -5209,10 +5977,18 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                         continue;
                     }
 
-                    // Some cover integrations may provide a separate control/action variable. If not present, keep 0.
+                    // Some cover integrations may provide a separate control/action variable.
+                    // If not present (common for Homematic IP/HCU where position variable is writable),
+                    // fall back to using the position variable for control.
                     $controlVar = $this->ResolveFeatureVarID($iid, 'control') ?? 0;
                     if ($controlVar && !IPS_VariableExists($controlVar)) {
                         $controlVar = 0;
+                    }
+
+                    if ((int)$controlVar <= 0) {
+                        $controlVar = (int)$positionVar;
+                        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                            "ℹ️ Cover instance $iid: control variable not resolved – using position_var_id=$controlVar as control", 0);
                     }
 
                     $existingCovers[] = [
@@ -5243,91 +6019,248 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 '✅ Selected media player rows: ' . count($mediaSelected), 0);
 
             if (!$mediaSelected) {
-                return;
-            }
+                // continue with next step
+            } else {
+                // existing Media-Player mapping
+                $existingMedia = json_decode((string)$this->ReadPropertyString('media_player_mapping'), true);
+                if (!is_array($existingMedia)) $existingMedia = [];
 
-            // existing Media-Player mapping
-            $existingMedia = json_decode((string)$this->ReadPropertyString('media_player_mapping'), true);
-            if (!is_array($existingMedia)) $existingMedia = [];
-
-            $existingMediaInstanceIds = [];
-            foreach ($existingMedia as $e) {
-                if (is_array($e) && isset($e['instance_id'])) {
-                    $existingMediaInstanceIds[(int)$e['instance_id']] = true;
-                }
-            }
-
-            $addedMedia = 0;
-
-            foreach ($mediaSelected as $s) {
-                $iid = (int)($s['instance_id'] ?? 0);
-                if ($iid <= 0 || !IPS_InstanceExists($iid)) {
-                    continue;
-                }
-                if (isset($existingMediaInstanceIds[$iid])) {
-                    continue;
+                $existingMediaInstanceIds = [];
+                foreach ($existingMedia as $e) {
+                    if (is_array($e) && isset($e['instance_id'])) {
+                        $existingMediaInstanceIds[(int)$e['instance_id']] = true;
+                    }
                 }
 
-                // Determine module GUID of this instance
-                $inst = IPS_GetInstance($iid);
-                $guid = $inst['ModuleInfo']['ModuleID'] ?? '';
+                $addedMedia = 0;
 
-                // Lookup device definition from registry
-                $deviceDef = null;
-                if (class_exists('DeviceRegistry')) {
-                    $deviceDef = DeviceRegistry::getDeviceMappingByGUID((string)$guid);
-                }
-
-                if (!is_array($deviceDef)) {
-                    $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
-                        "⚠️ Skipping media player instance $iid: no DeviceRegistry entry for GUID $guid", 0);
-                    continue;
-                }
-
-                $features = $deviceDef['features'] ?? [];
-                if (!is_array($features)) {
-                    $features = [];
-                }
-
-                $featureRows = [];
-                foreach ($features as $featureKey) {
-                    $featureKey = (string)$featureKey;
-                    if ($featureKey === '') continue;
-
-                    // Uses ResolveFeatureVarID() — you will map features via DeviceRegistry
-                    $varId = $this->ResolveFeatureVarID($iid, $featureKey);
-                    if (!$varId || !IPS_VariableExists($varId)) {
-                        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
-                            "ℹ️ Media player $iid: feature '$featureKey' not resolved (missing ident/var)", 0);
+                foreach ($mediaSelected as $s) {
+                    $iid = (int)($s['instance_id'] ?? 0);
+                    if ($iid <= 0 || !IPS_InstanceExists($iid)) {
+                        continue;
+                    }
+                    if (isset($existingMediaInstanceIds[$iid])) {
                         continue;
                     }
 
-                    $featureRows[] = [
-                        'feature_key' => $featureKey,
-                        'var_id' => (int)$varId
+                    // Determine module GUID of this instance
+                    $inst = IPS_GetInstance($iid);
+                    $guid = $inst['ModuleInfo']['ModuleID'] ?? '';
+
+                    // Lookup device definition from registry
+                    $deviceDef = null;
+                    if (class_exists('DeviceRegistry')) {
+                        $deviceDef = DeviceRegistry::resolveDeviceMapping($guid, $iid, null);
+                    }
+
+                    if (!is_array($deviceDef)) {
+                        $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                            "⚠️ Skipping media player instance $iid: no DeviceRegistry entry for GUID $guid", 0);
+                        continue;
+                    }
+
+                    $features = $deviceDef['features'] ?? [];
+                    if (!is_array($features)) {
+                        $features = [];
+                    }
+
+                    $featureRows = [];
+                    foreach ($features as $featureKey) {
+                        $featureKey = (string)$featureKey;
+                        if ($featureKey === '') continue;
+
+                        // Uses ResolveFeatureVarID() — you will map features via DeviceRegistry
+                        $varId = $this->ResolveFeatureVarID($iid, $featureKey);
+                        if (!$varId || !IPS_VariableExists($varId)) {
+                            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                                "ℹ️ Media player $iid: feature '$featureKey' not resolved (missing ident/var)", 0);
+                            continue;
+                        }
+
+                        $featureRows[] = [
+                            'feature_key' => $featureKey,
+                            'var_id' => (int)$varId
+                        ];
+                    }
+
+                    $existingMedia[] = [
+                        'name' => IPS_GetName($iid),
+                        'instance_id' => $iid,
+                        'features' => $featureRows
                     ];
+
+                    $existingMediaInstanceIds[$iid] = true;
+                    $addedMedia++;
                 }
 
-                $existingMedia[] = [
-                    'name' => IPS_GetName($iid),
-                    'instance_id' => $iid,
-                    'features' => $featureRows
-                ];
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                    '➕ Media players added to mapping: ' . $addedMedia, 0);
 
-                $existingMediaInstanceIds[$iid] = true;
-                $addedMedia++;
+                $this->UpdateFormField('media_player_mapping', 'values', json_encode($existingMedia, JSON_UNESCAPED_SLASHES));
             }
 
+            // -------------------------
+            // Step 5: Sensors
+            // -------------------------
             $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
-                '➕ Media players added to mapping: ' . $addedMedia, 0);
+                '➕ Applying suggested devices (step 5: sensors)', 0);
 
-            $this->UpdateFormField('media_player_mapping', 'values', json_encode($existingMedia, JSON_UNESCAPED_SLASHES));
+            $sensorSelected = $this->ReadSelectedFromPopupCache('popup_sensor_suggestions', 'var_id');
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                '✅ Selected sensor rows: ' . count($sensorSelected), 0);
+
+            if (!$sensorSelected) {
+                // continue with next step
+            } else {
+                // existing Sensor mapping
+                $existingSensors = json_decode((string)$this->ReadPropertyString('sensor_mapping'), true);
+                if (!is_array($existingSensors)) {
+                    $existingSensors = [];
+                }
+
+                // Uniqueness: allow multiple rows per instance if they map to different var_id
+                $existingKeys = [];
+                foreach ($existingSensors as $e) {
+                    if (!is_array($e)) continue;
+                    $iid0 = (int)($e['instance_id'] ?? 0);
+                    $vid0 = (int)($e['var_id'] ?? 0);
+                    if ($iid0 > 0 && $vid0 > 0) {
+                        $existingKeys[$iid0 . ':' . $vid0] = true;
+                    }
+                }
+
+                $addedSensors = 0;
+
+                foreach ($sensorSelected as $s) {
+                    $iid = (int)($s['instance_id'] ?? 0);
+                    $varId = (int)($s['var_id'] ?? 0);
+                    if ($iid <= 0 || !IPS_InstanceExists($iid) || $varId <= 0 || !IPS_VariableExists($varId)) {
+                        continue;
+                    }
+
+                    $unit = trim((string)($s['unit'] ?? ''));
+                    if ($unit === '') {
+                        $unit = $this->GuessUnitForVariable($varId);
+                    }
+
+                    $sensorType = trim((string)($s['sensor_type'] ?? 'custom'));
+                    if ($sensorType === '') {
+                        $sensorType = 'custom';
+                    }
+
+                    $key = $iid . ':' . (int)$varId;
+                    if (isset($existingKeys[$key])) {
+                        continue;
+                    }
+
+                    $existingSensors[] = [
+                        'name' => IPS_GetName($iid),
+                        'instance_id' => $iid,
+                        'var_id' => (int)$varId,
+                        'unit' => (string)$unit,
+                        'sensor_type' => (string)$sensorType
+                    ];
+
+                    $existingKeys[$key] = true;
+                    $addedSensors++;
+                }
+
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                    '➕ Sensors added to mapping: ' . $addedSensors, 0);
+
+                $this->UpdateFormField('sensor_mapping', 'values', json_encode($existingSensors, JSON_UNESCAPED_SLASHES));
+            }
         } catch (Throwable $e) {
             $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_DISCOVERY,
                 '💥 ApplySuggestedDevices crashed: ' . $e->getMessage(), 0);
             $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_DISCOVERY,
                 $e->getTraceAsString(), 0);
         }
+    }
+
+    /**
+     * Checks whether a sensor registry definition matches a given instance.
+     * Uses match.required_child_idents if present.
+     * A definition matches if at least one required ident exists in the instance.
+     *
+     * @param array $deviceDef
+     * @param int $instanceID
+     * @return bool
+     */
+    private function DoesSensorDefinitionMatchInstance(array $deviceDef, int $instanceID): bool
+    {
+        if ($instanceID <= 0 || !@IPS_InstanceExists($instanceID)) {
+            return false;
+        }
+
+        $match = $deviceDef['match'] ?? null;
+        if (!is_array($match)) {
+            // No match restrictions defined → accept definition
+            return true;
+        }
+
+        $required = $match['required_child_idents'] ?? [];
+        if (!is_array($required) || empty($required)) {
+            // No required idents defined → accept definition
+            return true;
+        }
+
+        foreach ($required as $ident) {
+            $ident = trim((string)$ident);
+            if ($ident === '') {
+                continue;
+            }
+
+            $varId = @IPS_GetObjectIDByIdent($ident, $instanceID);
+            if ($varId && @IPS_VariableExists($varId)) {
+                // At least one required ident exists → definition matches
+                return true;
+            }
+        }
+
+        // None of the required idents found → definition does not match
+        return false;
+    }
+
+    /**
+     * Try to infer a unit from a variable profile (Suffix/Prefix).
+     * Returns empty string if none found.
+     */
+    private function GuessUnitForVariable(int $varId): string
+    {
+        if ($varId <= 0 || !@IPS_VariableExists($varId)) {
+            return '';
+        }
+
+        $v = @IPS_GetVariable($varId);
+        if (!is_array($v)) {
+            return '';
+        }
+
+        // Prefer custom profile if present
+        $profile = trim((string)($v['VariableCustomProfile'] ?? ''));
+        if ($profile === '') {
+            $profile = trim((string)($v['VariableProfile'] ?? ''));
+        }
+        if ($profile === '') {
+            return '';
+        }
+
+        $p = null;
+        try {
+            $p = @IPS_GetVariableProfile($profile);
+        } catch (Throwable $e) {
+            $p = null;
+        }
+
+        if (!is_array($p)) {
+            return '';
+        }
+
+        $suffix = trim((string)($p['Suffix'] ?? ''));
+        $prefix = trim((string)($p['Prefix'] ?? ''));
+
+        return $suffix !== '' ? $suffix : ($prefix !== '' ? $prefix : '');
     }
 
     /**
@@ -5667,6 +6600,10 @@ class Remote3IntegrationDriver extends IPSModuleStrict
     public const TOPIC_API = 'API';
     public const TOPIC_FORM = 'FORM';
     public const TOPIC_EXT = 'EXT';
+    // Debug topics
+    const TOPIC_SETUP = 'SETUP';
+
+    public const TOPIC_CMD = 'CMD';
 
     /**
      * Structured debug output with topic/level filtering and throttling.
@@ -5766,13 +6703,16 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             self::TOPIC_AUTH => 'Authentication / token / whitelist',
             self::TOPIC_HOOK => 'Webhook requests / responses',
             self::TOPIC_WS => 'WebSocket frames / low-level',
+            self::TOPIC_DEVICE => 'Device',
             self::TOPIC_IO => 'Socket I/O / transport details',
             self::TOPIC_ENTITY => 'Entity updates sent to Remote 3',
             self::TOPIC_VM => 'Variable/MessageSink processing',
             self::TOPIC_DISCOVERY => 'Discovery / device mapping helpers',
             self::TOPIC_API => 'Remote API calls',
             self::TOPIC_FORM => 'Form/UI helpers / sessions list',
-            self::TOPIC_EXT => 'Extended / verbose debug'
+            self::TOPIC_EXT => 'Extended / verbose debug',
+            self::TOPIC_SETUP => 'Driver setup flow (setup_driver / driver_setup_change / set_driver_user_data)',
+            self::TOPIC_CMD => 'Incoming commands + responses (entity_command, action calls, result)',
         ];
     }
 
@@ -6551,7 +7491,16 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                                     ],
                                     'visible' => false
                                 ]
-                            ]
+                            ],
+                            [
+                                'caption' => 'Unit',
+                                'name' => 'unit',
+                                'width' => '200px',
+                                'add' => '',
+                                'edit' => [
+                                    'type' => 'ValidationTextBox'
+                                ]
+                            ],
                         ]
                     ]
                 ]
@@ -6834,7 +7783,3 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         return $form;
     }
 }
-
-
-
-

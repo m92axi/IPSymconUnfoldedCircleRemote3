@@ -376,7 +376,9 @@ class Remote3CoreManager extends IPSModuleStrict
 
         if ($host === '' || $pass === '') {
             // Not configured yet
-            $this->SetStatus(IS_CREATING);
+            // In Symcon only Active/Inactive/StandBy/Error codes are allowed to be set by modules.
+            // Use INACTIVE to indicate that the instance needs configuration.
+            $this->SetStatus(IS_INACTIVE);
         } else {
             // Config present; mark active for now (we may downgrade later if key creation fails)
             $this->SetStatus(IS_ACTIVE);
@@ -1784,19 +1786,20 @@ class Remote3CoreManager extends IPSModuleStrict
     {
         $form = [
             [
-                'code' => IS_CREATING,
+                'code' => IS_INACTIVE,
                 'icon' => 'inactive',
-                'caption' => 'Creating instance.'
+                'caption' => 'Not configured yet.'
             ],
             [
                 'code' => IS_ACTIVE,
                 'icon' => 'active',
                 'caption' => 'Remote 3 Core Manager created.'
             ],
+            // Optional explicit error state for UI
             [
-                'code' => IS_INACTIVE,
-                'icon' => 'inactive',
-                'caption' => 'interface closed.'
+                'code' => IS_EBASE,
+                'icon' => 'error',
+                'caption' => 'Error.'
             ]
         ];
         return $form;
