@@ -2564,7 +2564,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
         // Falls es eine IPv6 Adresse ist (enthält Doppelpunkt), in Klammern setzen
         if (str_contains($remoteHost, ':') && !str_starts_with($remoteHost, '[')) {
-            $remoteHost = "[" . $remoteHost . "]";
+            $remoteHost = "[" . $remoteHost . "]:8080";
         }
 
         $url = "http://{$remoteHost}/api/intg/drivers/" . rawurlencode($driverId);
