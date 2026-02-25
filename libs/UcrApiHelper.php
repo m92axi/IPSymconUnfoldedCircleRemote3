@@ -74,6 +74,32 @@ class UcrApiHelper
     }
 
     /**
+     * Get the effective Remote host for REST calls.
+     * If the module provides GetEffectiveRemoteHost(), use it (supports manual override).
+     * Otherwise, fall back to the stored attribute `remote_host`.
+     */
+    private function CtxGetEffectiveRemoteHost(): string
+    {
+        if (method_exists($this->ctx, 'GetEffectiveRemoteHost')) {
+            $v = @$this->ctx->GetEffectiveRemoteHost();
+            return is_string($v) ? trim($v) : '';
+        }
+        return trim($this->CtxReadAttrString('remote_host'));
+    }
+
+    /**
+     * Returns true if module indicates manual host override is active.
+     */
+    private function CtxIsManualHostEnabled(): bool
+    {
+        if (method_exists($this->ctx, 'IsManualHostEnabled')) {
+            $v = @$this->ctx->IsManualHostEnabled();
+            return (bool)$v;
+        }
+        return false;
+    }
+
+    /**
      * Decide CURLOPT_IPRESOLVE for the given host.
      *
      * - If host is a literal IPv4 address, force IPv4.
@@ -333,7 +359,7 @@ class UcrApiHelper
         $this->dbg(__FUNCTION__, 'started' . ($forceRenew ? ' (forceRenew=true)' : ''), 0, 'API', 0);
 
         // --- read config ---
-        $hostRaw = $this->CtxReadAttrString('remote_host');
+        $hostRaw = $this->CtxGetEffectiveRemoteHost();
         $host = $this->PickRestHost($hostRaw);
         $user = $this->CtxReadPropString('web_config_user');
         $pass = $this->CtxReadAttrString('web_config_pass');
@@ -634,7 +660,7 @@ class UcrApiHelper
     {
         $remoteHost = trim($remoteHost);
         if ($remoteHost === '') {
-            $remoteHost = trim($this->CtxReadAttrString('remote_host'));
+            $remoteHost = $this->CtxGetEffectiveRemoteHost();
         }
 
         if ($remoteHost === '') {
@@ -646,7 +672,10 @@ class UcrApiHelper
         $storedPin = trim($this->CtxReadAttrString('web_config_pass'));
 
         // Keep host consistent for subsequent calls (including GetApiKey/EnsureApiKey)
-        $this->CtxWriteAttrString('remote_host', $remoteHost);
+        // Do not overwrite discovered host when manual override is active.
+        if (!$this->CtxIsManualHostEnabled()) {
+            $this->CtxWriteAttrString('remote_host', $remoteHost);
+        }
 
         // Try to obtain a valid API key (this will validate/renew/create if possible)
         $this->dbg(__FUNCTION__, '🔎 EnsureRemoteApiAccess → trying EnsureApiKey for host ' . $remoteHost, 0, 'SETUP', 0);
@@ -676,7 +705,7 @@ class UcrApiHelper
     {
         $this->dbg(__FUNCTION__, 'started', 0, 'API', 0);
 
-        $host = $this->CtxReadAttrString('remote_host');
+        $host = $this->CtxGetEffectiveRemoteHost();
         $pass = $this->CtxReadAttrString('web_config_pass');
 
         // Only attempt to create/validate an API key once the required fields are present.
@@ -720,7 +749,7 @@ class UcrApiHelper
     {
         $this->dbg(__FUNCTION__, 'started', 0, 'API', 0);
 
-        $hostRaw = $this->CtxReadAttrString('remote_host');
+        $hostRaw = $this->CtxGetEffectiveRemoteHost();
         $host = $this->PickRestHost($hostRaw);
         if ($hostRaw === '') {
             $msg = 'Host is missing.';
