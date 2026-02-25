@@ -62,6 +62,25 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         return $this->Api()->UploadSymconIcon();
     }
 
+    /**
+     * Ensures a valid API key exists (creates/validates it if needed).
+     *
+     * This is implemented in the shared UcrApiHelper and exposed here as a local wrapper
+     * so existing module code can keep calling $this->EnsureApiKey().
+     */
+    protected function EnsureApiKey(): bool
+    {
+        return $this->Api()->EnsureApiKey();
+    }
+
+    /**
+     * Legacy wrapper: kept for backward compatibility after refactor to UcrApiHelper.
+     */
+    protected function EnsureRemoteApiAccess(): array
+    {
+        return $this->Api()->EnsureRemoteApiAccess();
+    }
+
     public function GetCompatibleParents(): string
     {
         return json_encode([
@@ -75,6 +94,8 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         //Never delete this line!
         parent::Create();
 
+        $this->RegisterPropertyString('host', '');
+        $this->RegisterPropertyBoolean('use_manual_host', false);
         $this->RegisterAttributeString('api_key', '');
         $this->RegisterAttributeString('api_key_name', '');
         $this->RegisterAttributeString('auth_mode', '');
@@ -82,9 +103,13 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $this->RegisterAttributeBoolean('icon_uploaded', false);
         $this->RegisterPropertyString('web_config_user', 'web-configurator');
         // REST configuration used by UcrApiHelper
-        $this->RegisterPropertyString('host', '');
         $this->RegisterAttributeString('web_config_pass', '');
         $this->RegisterAttributeString('remote_host', '');
+
+        // store IPv4/IPv6 fallback addresses
+        $this->RegisterAttributeString('remote_host_ipv4', '');
+        $this->RegisterAttributeString('remote_host_ipv6', '');
+        $this->RegisterAttributeString('remote_host_name', '');
 
         $this->RegisterAttributeString('token', '');
 
@@ -182,6 +207,9 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         //Never delete this line!
         parent::ApplyChanges();
         $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_EXT, '⚙️ ApplyChanges() called', 0);
+        if ($this->IsManualHostEnabled()) {
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_EXT, '🧩 Manual host override enabled → using host=' . $this->ReadPropertyString('host'), 0);
+        }
         //Only call this in READY state. On startup the WebHook instance might not be available yet
         if (IPS_GetKernelRunlevel() == KR_READY) {
             $this->RegisterHook('/hook/unfoldedcircle');
@@ -400,6 +428,27 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         }
 
         return $clientIP;
+    }
+
+    /**
+     * Returns true if user enabled manual host override AND a host value is present.
+     */
+    public function IsManualHostEnabled(): bool
+    {
+        return (bool)$this->ReadPropertyBoolean('use_manual_host')
+            && trim((string)$this->ReadPropertyString('host')) !== '';
+    }
+
+    /**
+     * Returns the effective host to use for REST/API calls.
+     * Manual override (property host) wins, otherwise the stored discovered REST host.
+     */
+    public function GetEffectiveRemoteHost(): string
+    {
+        if ($this->IsManualHostEnabled()) {
+            return trim((string)$this->ReadPropertyString('host'));
+        }
+        return trim((string)$this->ReadAttributeString('remote_host'));
     }
 
     public function GetStoredWebPassword(): string
@@ -1006,6 +1055,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
         // --- REST host resolution (IPv6 -> IPv4 fallback via mDNS directory) ---
         $clientIPRest = $this->ResolveRemoteHostForRest($clientIP);
+        $manualOverride = $this->IsManualHostEnabled();
         if ($clientIPRest !== '' && $clientIPRest !== $clientIP) {
             $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_EXT,
                 '🌐 REST host resolved: client_ip=' . $clientIP . ' → rest_host=' . $clientIPRest, 0);
@@ -1013,13 +1063,15 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
         // Keep a best-effort REST host available for later REST calls (used during setup flow)
         // Overwrite remote_host if it is empty or contains a link-local IPv6 (unusable for REST).
-        $storedRemoteHost = trim((string)$this->ReadAttributeString('remote_host'));
-        $storedIsBad = ($storedRemoteHost !== '' && $this->IsIPv6LinkLocal($storedRemoteHost));
-        if (($storedRemoteHost === '' || $storedIsBad) && $clientIPRest !== '') {
-            if ($storedIsBad) {
-                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_EXT, '🔁 remote_host was link-local IPv6, replacing with REST host: ' . $clientIPRest, 0);
+        if (!$manualOverride) {
+            $storedRemoteHost = trim((string)$this->ReadAttributeString('remote_host'));
+            $storedIsBad = ($storedRemoteHost !== '' && $this->IsIPv6LinkLocal($storedRemoteHost));
+            if (($storedRemoteHost === '' || $storedIsBad) && $clientIPRest !== '') {
+                if ($storedIsBad) {
+                    $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_EXT, '🔁 remote_host was link-local IPv6, replacing with REST host: ' . $clientIPRest, 0);
+                }
+                $this->WriteAttributeString('remote_host', $clientIPRest);
             }
-            $this->WriteAttributeString('remote_host', $clientIPRest);
         }
 
         if (!isset($data['Buffer'])) {
@@ -1199,9 +1251,11 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 $this->SendResultOK($reqId, $clientIP, $clientPort);
                 // Remember which Remote connected (needed for REST calls without Discovery/Core Manager)
                 // Use IPv4 fallback for REST if the remote connected via IPv6 and we have a matching IPv4 from mDNS.
-                $restHost = $this->ResolveRemoteHostForRest($clientIP);
-                if ($restHost !== '') {
-                    $this->WriteAttributeString('remote_host', $restHost);
+                if (!$this->IsManualHostEnabled()) {
+                    $restHost = $this->ResolveRemoteHostForRest($clientIP);
+                    if ($restHost !== '') {
+                        $this->WriteAttributeString('remote_host', $restHost);
+                    }
                 }
                 $this->StartDriverSetupFlow($clientIP, $clientPort);
                 break;
@@ -7835,6 +7889,19 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                         'type' => 'CheckBox',
                         'name' => 'extended_debug',
                         'caption' => 'Enable extended debug output'
+                    ],
+                    [
+                        'type' => 'CheckBox',
+                        'name' => 'use_manual_host',
+                        'caption' => 'Manuelle IP-Adresse nutzen (Übergangslösung bei IPv6/cURL)'
+                    ],
+                    [
+                        'type' => 'ValidationTextBox',
+                        'name' => 'host',
+                        'caption' => 'Host (manuelle IP-Adresse)',
+                        'width' => '90%',
+                        'enabled' => $this->ReadPropertyBoolean('use_manual_host'),
+                        'visible' => true
                     ],
                     [
                         'type' => 'Button',

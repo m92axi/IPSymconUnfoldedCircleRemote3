@@ -87,6 +87,11 @@ class Remote3CoreManager extends IPSModuleStrict
         $this->RegisterPropertyString('ver_api', '');
         $this->RegisterPropertyString('https_port', '');
 
+        // store IPv4/IPv6 fallback addresses
+        $this->RegisterAttributeString('remote_host_ipv4', '');
+        $this->RegisterAttributeString('remote_host_ipv6', '');
+        $this->RegisterAttributeString('remote_host_name', '');
+
         $this->RegisterAttributeString('api_key', '');
         $this->RegisterAttributeString('api_key_name', '');
         $this->RegisterAttributeString('auth_mode', '');
