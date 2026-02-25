@@ -39,7 +39,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
     private ?UcrApiHelper $apiHelper = null;
 
-    private function Api(): UcrApiHelper
+    protected function Api(): UcrApiHelper
     {
         if ($this->apiHelper === null) {
             $this->apiHelper = new UcrApiHelper($this);
@@ -190,7 +190,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             $this->SetTimerInterval("UpdateAllEntityStates", 15000); // alle 15 Sekunden den Status senden
             $this->SetTimerInterval('RefreshRemoteDirectory', 60000);
             // Unfiltered debug to verify timer setup (visible even when DebugTrait filters are active)
-            $this->SendDebug(__FUNCTION__, '✅ RefreshRemoteDirectory timer interval set to 60000 ms', 0);
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_EXT, '✅ RefreshRemoteDirectory timer interval set to 60000 ms', 0);
 
             // Run once immediately so users see results without waiting for the first timer tick
             $this->RefreshRemoteDirectory();
@@ -206,18 +206,83 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         }
     }
 
+    /**
+     * Fallback: Try to obtain discovered remotes from the dedicated Discovery instance.
+     *
+     * @return array List of remote entries (best-effort).
+     */
+    private function GetRemoteDirectoryFromDiscovery(): array
+    {
+        $guid = '{4C0ABD10-D25B-0D92-9B2A-9E10E24659B0}';
+        $ids = @IPS_GetInstanceListByModuleID($guid);
+        if (!is_array($ids) || count($ids) === 0) {
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_EXT, '🔎 No Discovery instance found for GUID ' . $guid, 0);
+            return [];
+        }
+
+        // Pick the first active instance
+        $discoveryId = 0;
+        foreach ($ids as $id) {
+            $status = (int)@IPS_GetInstance($id)['InstanceStatus'];
+            if ($status === IS_ACTIVE) {
+                $discoveryId = (int)$id;
+                break;
+            }
+        }
+        if ($discoveryId === 0) {
+            $discoveryId = (int)$ids[0];
+        }
+
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_EXT, '🧭 Fallback to Discovery instance ' . $discoveryId . ' (UCR_GetDevices)', 0);
+
+        // UCR_GetDevices is expected to return either an array or a JSON string (depending on implementation)
+        $devices = @UCR_GetDevices($discoveryId);
+        if (is_string($devices)) {
+            $decoded = json_decode($devices, true);
+            if (is_array($decoded)) {
+                $devices = $decoded;
+            }
+        }
+        if (!is_array($devices)) {
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_EXT, '⚠️ Discovery returned no usable devices', 0);
+            return [];
+        }
+
+        // Best-effort normalize: some implementations return {"devices": [...]}.
+        if (isset($devices['devices']) && is_array($devices['devices'])) {
+            $devices = $devices['devices'];
+        }
+
+        // Ensure list of arrays
+        $result = [];
+        foreach ($devices as $d) {
+            if (is_array($d)) {
+                $result[] = $d;
+            }
+        }
+
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_EXT, '🧭 Discovery fallback returned ' . count($result) . ' device(s)', 0);
+        return $result;
+    }
+
     public function RefreshRemoteDirectory(): void
     {
         // Unfiltered debug: helps verifying that the method is actually executed
-        $this->SendDebug(__FUNCTION__, '🔎 RefreshRemoteDirectory() called', 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_EXT, '🔎 RefreshRemoteDirectory() called', 0);
         $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_EXT, '🔎 Refresh remote directory (mDNS)', 0);
 
         $devices = $this->SearchRemotes();          // aus Trait
         $info = $this->GetRemoteInfo($devices);  // aus Trait
 
+        // Fallback: If our own mDNS scan returns nothing, try the dedicated Discovery instance (many users already have it).
+        if (!is_array($info) || count($info) === 0) {
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_EXT, '⚠️ No remotes found via internal mDNS scan → trying Discovery fallback', 0);
+            $info = $this->GetRemoteDirectoryFromDiscovery();
+        }
+
         // Speichern als Referenzliste
         $this->WriteAttributeString('remote_directory', json_encode(array_values($info)));
-        $this->SendDebug(__FUNCTION__, '✅ remote_directory written (entries=' . count($info) . ')', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_EXT, '✅ remote_directory written (entries=' . count($info) . ')', 0);
 
         $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_EXT, '✅ remote_directory updated: ' . count($info) . ' remote(s)', 0);
     }
@@ -265,7 +330,17 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $dirRaw = (string)$this->ReadAttributeString('remote_directory');
         $dir = json_decode($dirRaw, true);
         if (!is_array($dir)) {
-            return '';
+            $dir = [];
+        }
+
+        // Lazy fallback: if directory is still empty (e.g., first seconds after boot), try to populate it once via Discovery.
+        if (count($dir) === 0) {
+            $fallback = $this->GetRemoteDirectoryFromDiscovery();
+            if (count($fallback) > 0) {
+                $this->WriteAttributeString('remote_directory', json_encode(array_values($fallback)));
+                $dir = $fallback;
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_EXT, '🧭 remote_directory was empty → populated via Discovery fallback (entries=' . count($dir) . ')', 0);
+            }
         }
 
         // If we only have a link-local IPv6 (fe80::) it often differs from the mDNS-advertised global/ULA IPv6.
@@ -942,7 +1017,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $storedIsBad = ($storedRemoteHost !== '' && $this->IsIPv6LinkLocal($storedRemoteHost));
         if (($storedRemoteHost === '' || $storedIsBad) && $clientIPRest !== '') {
             if ($storedIsBad) {
-                $this->SendDebug(__FUNCTION__, '🔁 remote_host was link-local IPv6, replacing with REST host: ' . $clientIPRest, 0);
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_EXT, '🔁 remote_host was link-local IPv6, replacing with REST host: ' . $clientIPRest, 0);
             }
             $this->WriteAttributeString('remote_host', $clientIPRest);
         }
@@ -2311,37 +2386,6 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             'msg_data' => new stdClass()
         ];
         $this->PushToRemoteClient($response, $clientIP, $clientPort);
-    }
-
-    private function EnsureRemoteApiAccess(string $remoteHost): array
-    {
-        $remoteHost = trim($remoteHost);
-        if ($remoteHost === '') {
-            return ['ok' => false, 'api_key' => '', 'need_pin' => true, 'reason' => 'remote_host_empty'];
-        }
-
-        // PIN wird im Setup als Attribute gespeichert
-        $storedPin = trim((string)$this->ReadAttributeString('web_config_pass'));
-
-        // UcrApiHelper erwartet: host, web_config_user, web_config_pass
-        $this->WriteAttributeString('remote_host', $remoteHost);
-
-        // Jetzt via Helper versuchen, einen gültigen API Key zu bekommen (validieren/erneuern/neu erstellen)
-        $apiKey = trim((string)$this->GetApiKey());
-        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_SETUP, '🔎 EnsureRemoteApiAccess → GetApiKey(): "' . $apiKey . '" for host ' . $remoteHost, 0);
-
-        if ($apiKey !== '') {
-            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_SETUP, '✅ Remote API access OK (api_key_ok)', 0);
-            return ['ok' => true, 'api_key' => $apiKey, 'need_pin' => false, 'reason' => 'api_key_ok'];
-        }
-
-        $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_SETUP, '❌ Remote API access failed → PIN required', 0);
-
-        // Kein API Key => PIN notwendig (entweder fehlt oder ist falsch/outdated)
-        if ($storedPin !== '') {
-            return ['ok' => false, 'api_key' => '', 'need_pin' => true, 'reason' => 'stored_pin_no_key'];
-        }
-        return ['ok' => false, 'api_key' => '', 'need_pin' => true, 'reason' => 'no_pin'];
     }
 
     /**
@@ -5293,62 +5337,6 @@ class Remote3IntegrationDriver extends IPSModuleStrict
     }
 
     /**
-     * Extracts known client session IPs for use in the whitelist select field.
-     *
-     * @return array Array of ['value' => IP, 'caption' => string]
-     */
-    private function GetKnownClientIPOptions(): array
-    {
-        $sessions = $this->readSessions();
-        $options = [];
-
-        foreach ($sessions as $clientKey => $info) {
-            $clientKey = (string)$clientKey;
-            $ip = $clientKey;
-            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_FORM, '🔎 Option source key=' . $clientKey . ' (colons=' . substr_count($clientKey, ':') . ')', 0);
-
-            // Key format: [IPv6]:port
-            if (preg_match('/^\[(.+)]:(\d+)$/', $clientKey, $m)) {
-                $ip = $m[1];
-            } // Key format: IPv4:port (exactly one colon)
-            elseif (substr_count($clientKey, ':') === 1 && preg_match('/^([^:]+):(\d+)$/', $clientKey, $m)) {
-                $ip = $m[1];
-            }
-            // Otherwise: treat as pure IP (IMPORTANT: IPv6 contains many colons)
-
-            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_FORM, '✅ Option parsed ip=' . $ip, 0);
-            // Deduplicate
-            $existingValues = array_column($options, 'value');
-            if (!in_array($ip, $existingValues, true)) {
-                $caption = $ip;
-                if (is_array($info) && !empty($info['model'])) {
-                    $caption .= ' (' . $info['model'] . ')';
-                }
-                $options[] = [
-                    'caption' => $caption,
-                    'value' => $ip
-                ];
-            }
-        }
-
-        return $options;
-    }
-
-    /**
-     * Dumps raw and parsed client_sessions attribute and triggers GetKnownClientIPOptions debug.
-     */
-    public function DumpClientSessions(): void
-    {
-        $raw = $this->ReadAttributeString('client_sessions');
-        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_FORM, '📦 client_sessions (raw)=' . $raw, 0);
-
-        $parsed = $this->readSessions();
-        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_FORM, '📦 client_sessions (parsed)=' . json_encode($parsed), 0);
-
-        $this->GetKnownClientIPOptions(); // triggers detailed option logs
-    }
-
-    /**
      * Erkennt den Sensor-Typ einer Variable anhand des Profils und gibt diesen per Debug aus.
      * Nutzt ausschließlich die übergebene Variable-ID und greift nicht auf Mapping oder RowIndex zu.
      *
@@ -7047,47 +7035,6 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         return array_values($varIds);
     }
 
-    private function BuildDebugClientIPsConfig(): array
-    {
-        $raw = (string)$this->ReadPropertyString('debug_client_ips_cfg');
-        $cfg = json_decode($raw, true);
-
-        $existing = [];
-        if (is_array($cfg)) {
-            foreach ($cfg as $row) {
-                if (!is_array($row)) continue;
-                $ip = trim((string)($row['ip'] ?? ''));
-                if ($ip === '') continue;
-                $existing[] = ['ip' => $ip];
-            }
-        }
-
-        return $existing;
-    }
-
-    private function GetConfiguredClientIPs(): array
-    {
-        $ips = [];
-
-        // New list-based config
-        $rows = json_decode((string)$this->ReadPropertyString('debug_client_ips_cfg'), true);
-        if (is_array($rows)) {
-            foreach ($rows as $row) {
-                if (!is_array($row)) continue;
-                $ip = trim((string)($row['ip'] ?? ''));
-                if ($ip !== '') $ips[] = $ip;
-            }
-        }
-
-        // Backward compatible: legacy CSV property (if still present)
-        $legacy = (string)$this->ReadPropertyString('debug_client_ips');
-        if ($legacy !== '') {
-            $ips = array_merge($ips, $this->ParseCsvList($legacy));
-        }
-
-        $ips = array_values(array_unique(array_filter($ips, fn($v) => $v !== '')));
-        return $ips;
-    }
 
     /**
      * build configuration form

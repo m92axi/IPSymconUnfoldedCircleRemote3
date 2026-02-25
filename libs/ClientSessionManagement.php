@@ -7,15 +7,7 @@ trait ClientSessionTrait
         return $ip . ':' . $port;
     }
 
-    private function readSessions(): array
-    {
-        return json_decode($this->ReadAttributeString('client_sessions'), true) ?: [];
-    }
 
-    private function writeSessions(array $sessions): void
-    {
-        $this->WriteAttributeString('client_sessions', json_encode($sessions));
-    }
 
     /**
      * Add or update a client session by IP, updating port and last_seen.
@@ -120,5 +112,15 @@ trait ClientSessionTrait
     private function resetClients(): void
     {
         $this->writeSessions([]);
+    }
+
+    private function readSessions(): array
+    {
+        return json_decode($this->ReadAttributeString('client_sessions'), true) ?: [];
+    }
+
+    private function writeSessions(array $sessions): void
+    {
+        $this->WriteAttributeString('client_sessions', json_encode($sessions));
     }
 }

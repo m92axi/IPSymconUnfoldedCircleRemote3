@@ -23,7 +23,21 @@
           "Creating instance.": "Instanz wird erstellt.",
           "Remote 3 Core Manager created.": "Remote 3 Core Manager erstellt.",
           "interface closed.": "Schnittstelle geschlossen.",
-          "Refresh all data": "Alle Daten aktualisieren"
+          "Refresh all data": "Alle Daten aktualisieren",
+          "🧪 Expert Debug": "🧪 Experten-Debug",
+          "🪲 Debugging": "🪲 Debugging",
+          "Use filters to reduce debug output to specific entities/IDs/IPs. Example topics: WS, HOOK, ENTITY, VM, AUTH.": "Nutze Filter, um die Debug-Ausgabe auf bestimmte Entities/IDs/IPs zu reduzieren. Beispiel-Themen: WS, HOOK, ENTITY, VM, AUTH.",
+          "Minimum debug level": "Minimales Debug-Level",
+          "Enable filters": "Filter aktivieren",
+          "Topics (CSV, empty = all)": "Topics (CSV, leer = alle)",
+          "Entity IDs (CSV)": "Entity-IDs (CSV)",
+          "Var/Object IDs (CSV)": "Var-/Objekt-IDs (CSV)",
+          "Client IPs (CSV)": "Client-IP-Adressen (CSV)",
+          "Text filter (substring or regex)": "Textfilter (Substring oder Regex)",
+          "Text filter is regex": "Textfilter ist Regex",
+          "Log matches only (strict)": "Nur Treffer loggen (strict)",
+          "Throttle (ms, 0=off)": "Throttle (ms, 0=aus)",
+          "Unit": "Einheit"
         }
     }
 }

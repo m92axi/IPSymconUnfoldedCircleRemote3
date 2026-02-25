@@ -18,7 +18,7 @@ class Remote3CoreManager extends IPSModuleStrict
 
     private ?UcrApiHelper $apiHelper = null;
 
-    private function Api(): UcrApiHelper
+    protected function Api(): UcrApiHelper
     {
         if ($this->apiHelper === null) {
             $this->apiHelper = new UcrApiHelper($this);
@@ -39,6 +39,25 @@ class Remote3CoreManager extends IPSModuleStrict
     public function UploadSymconIcon(): string
     {
         return $this->Api()->UploadSymconIcon();
+    }
+
+    /**
+     * Ensures a valid API key exists (creates/validates it if needed).
+     *
+     * This is implemented in the shared UcrApiHelper and exposed here as a local wrapper
+     * so existing module code can keep calling $this->EnsureApiKey().
+     */
+    protected function EnsureApiKey(): bool
+    {
+        return $this->Api()->EnsureApiKey();
+    }
+
+    /**
+     * Expose the full helper result for setup flows / diagnostics.
+     */
+    protected function EnsureRemoteApiAccess(): array
+    {
+        return $this->Api()->EnsureRemoteApiAccess();
     }
 
     public function GetCompatibleParents(): string
@@ -87,6 +106,28 @@ class Remote3CoreManager extends IPSModuleStrict
         $this->RegisterPropertyString('web_config_user', 'web-configurator');
         $this->RegisterPropertyString('web_config_pass', '');
         $this->RegisterAttributeString('web_config_pass', '');
+
+        // --- Expert Debug / Debug Filtering ---
+        $this->RegisterPropertyBoolean('expert_debug', false);
+        $this->RegisterPropertyInteger('debug_level', 4); // 0=BASIC,1=ERROR,2=WARN,3=INFO,4=TRACE
+        $this->RegisterPropertyBoolean('debug_filter_enabled', false);
+        $this->RegisterPropertyString('debug_topics', ''); // comma-separated topics; empty = all
+        $this->RegisterPropertyString('debug_entity_ids', ''); // comma-separated entity ids
+        $this->RegisterPropertyString('debug_var_ids', ''); // comma-separated var/object ids
+        $this->RegisterPropertyString('debug_client_ips', ''); // comma-separated IPs
+        $this->RegisterPropertyString('debug_text_filter', ''); // substring or regex
+        $this->RegisterPropertyBoolean('debug_text_is_regex', false);
+        $this->RegisterPropertyBoolean('debug_strict_match', true); // require match when any filter is set
+        $this->RegisterPropertyInteger('debug_throttle_ms', 0); // 0 disables throttling
+        $this->RegisterPropertyString('debug_topics_cfg', '');
+        $this->RegisterPropertyString('debug_filter_instances', '');
+        $this->RegisterPropertyString('debug_client_ips_cfg', '');
+
+        $this->RegisterAttributeString('client_sessions', '');
+        $this->RegisterAttributeString('connected_clients', '');
+
+        // Properties for expert settings
+        $this->RegisterPropertyBoolean('extended_debug', false);
 
         //We need to call the RegisterHook function on Kernel READY
         $this->RegisterMessage(0, IPS_KERNELMESSAGE);
@@ -146,22 +187,22 @@ class Remote3CoreManager extends IPSModuleStrict
         // $host and $pass already read above
 
         if ($host !== '' && $pass !== '') {
-            $this->SendDebug(__FUNCTION__, '🚀 Auto setup triggered (host + password present)', 0);
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_SETUP, '🚀 Auto setup triggered (host + password present)', 0);
 
             // 1) Ensure API key exists
             if ($this->EnsureApiKey()) {
-                $this->SendDebug(__FUNCTION__, '✅ API key ensured', 0);
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_SETUP, '✅ API key ensured', 0);
 
                 // Parent WebSocket manipulation temporarily disabled for stabilization
                 // No automatic ApplyChanges, activation, subscription or refresh here
 
                 // 5) Try icon upload once
                 if (!$this->ReadAttributeBoolean('icon_uploaded')) {
-                    $this->SendDebug(__FUNCTION__, '🖼️ Attempting automatic icon upload', 0);
+                    $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_SETUP, '🖼️ Attempting automatic icon upload', 0);
                     $this->UploadSymconIcon();
                 }
             } else {
-                $this->SendDebug(__FUNCTION__, '❌ API key could not be ensured during auto setup', 0);
+                $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_SETUP, '❌ API key could not be ensured during auto setup', 0);
                 // Keep instance active (config is present). WS parent may still be connected; we will retry later.
                 $this->SetStatus(IS_ACTIVE);
             }
@@ -177,7 +218,7 @@ class Remote3CoreManager extends IPSModuleStrict
         // If manual setup is not finished yet (no host/pass), do not configure the WS client.
         // Return a valid but non-working dummy configuration so the parent stays inactive.
         if ($host === '' || $pass === '') {
-            $this->SendDebug(__FUNCTION__, '⏸️ WS-Konfiguration noch nicht möglich (Host/Passwort fehlt).', 0);
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_WS, '⏸️ WS-Konfiguration noch nicht möglich (Host/Passwort fehlt).', 0);
 
             $dummy = [
                 'URL' => 'wss://127.0.0.1/ws',
@@ -192,9 +233,9 @@ class Remote3CoreManager extends IPSModuleStrict
         // Ensure we have a valid API key once host+pass are present.
         $apiKey = $this->ReadAttributeString('api_key');
         if ($apiKey === '') {
-            $this->SendDebug(__FUNCTION__, '🔐 Kein API-Key vorhanden – versuche API-Key zu erzeugen/validieren...', 0);
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_WS, '🔐 Kein API-Key vorhanden – versuche API-Key zu erzeugen/validieren...', 0);
             if (!$this->EnsureApiKey()) {
-                $this->SendDebug(__FUNCTION__, '⏸️ WS-Konfiguration wird verschoben (API-Key nicht verfügbar).', 0);
+                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_WS, '⏸️ WS-Konfiguration wird verschoben (API-Key nicht verfügbar).', 0);
 
                 $dummy = [
                     'URL' => 'wss://127.0.0.1/ws',
@@ -223,19 +264,19 @@ class Remote3CoreManager extends IPSModuleStrict
             'Headers' => $headers
         ];
 
-        $this->SendDebug(__FUNCTION__, '🧩 WS Configuration: ' . json_encode($config), 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, '🧩 WS Configuration: ' . json_encode($config), 0);
         return json_encode($config);
     }
 
     public function ForwardData(string $JSONString): string
     {
-        $this->SendDebug(__FUNCTION__, '📥 Eingehende Daten: ' . $JSONString, 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, '📥 Eingehende Daten: ' . $JSONString, 0);
 
         $data = json_decode($JSONString, true);
 
         // Prüfen, ob ein Buffer existiert
         if (!isset($data['Buffer'])) {
-            $this->SendDebug(__FUNCTION__, '❌ Fehler: Buffer fehlt!', 0);
+            $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_WS, '❌ Fehler: Buffer fehlt!', 0);
             return json_encode(['error' => 'Buffer fehlt']);
         }
 
@@ -243,12 +284,12 @@ class Remote3CoreManager extends IPSModuleStrict
 
         // Prüfen, ob "method" vorhanden ist
         if (!isset($buffer['method'])) {
-            $this->SendDebug(__FUNCTION__, '❌ Fehler: Buffer enthält kein "method"-Feld!', 0);
+            $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_WS, '❌ Fehler: Buffer enthält kein "method"-Feld!', 0);
             return json_encode(['error' => 'method fehlt im Buffer']);
         }
 
         $method = $buffer['method'];
-        $this->SendDebug(__FUNCTION__, "➡️ Verarbeite Methode: $method", 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, "➡️ Verarbeite Methode: $method", 0);
 
         switch ($method) {
             case 'CallGetVersion':
@@ -286,7 +327,7 @@ class Remote3CoreManager extends IPSModuleStrict
             case 'CallGetIntg':
                 return $this->CallGetIntg();
             default:
-                $this->SendDebug(__FUNCTION__, "⚠️ Unbekannte Methode: $method", 0);
+                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_WS, "⚠️ Unbekannte Methode: $method", 0);
                 return json_encode(['error' => 'Unbekannte Methode']);
         }
         // $this->SendDataToParent(json_encode(['DataID' => '{79827379-F36E-4ADA-8A95-5F8D1DC92FA9}', 'Buffer' => $data->Buffer]));
@@ -295,11 +336,11 @@ class Remote3CoreManager extends IPSModuleStrict
     public function ReceiveData(string $JSONString): string
     {
         // WebSocket Client -> Splitter payload
-        $this->SendDebug(__FUNCTION__, '📥 Envelope: ' . $JSONString, 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, '📥 Envelope: ' . $JSONString, 0);
 
         $envelope = json_decode($JSONString, true);
         if (!is_array($envelope) || !array_key_exists('Buffer', $envelope)) {
-            $this->SendDebug(__FUNCTION__, '❌ Invalid envelope (Buffer missing)', 0);
+            $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_WS, '❌ Invalid envelope (Buffer missing)', 0);
             return '';
         }
 
@@ -325,7 +366,7 @@ class Remote3CoreManager extends IPSModuleStrict
             if ($isHex) {
                 $decodedRaw = hex2bin($raw);
                 if ($decodedRaw === false) {
-                    $this->SendDebug(__FUNCTION__, '❌ Buffer looks like HEX but hex2bin failed', 0);
+                    $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_WS, '❌ Buffer looks like HEX but hex2bin failed', 0);
                     return '';
                 }
                 $raw = $decodedRaw;
@@ -338,16 +379,16 @@ class Remote3CoreManager extends IPSModuleStrict
             } else {
                 // Keep raw buffer for debugging; we currently expect JSON from WebSocket Client.
                 $preview = is_string($raw) ? substr($raw, 0, 250) : '';
-                $this->SendDebug(__FUNCTION__, '⚠️ Buffer is not JSON (preview): ' . $preview, 0);
+                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_WS, '⚠️ Buffer is not JSON (preview): ' . $preview, 0);
                 return '';
             }
         } else {
-            $this->SendDebug(__FUNCTION__, '❌ Buffer has unsupported type', 0);
+            $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_WS, '❌ Buffer has unsupported type', 0);
             return '';
         }
 
         if (!is_array($data)) {
-            $this->SendDebug(__FUNCTION__, '❌ Decoded payload is not an array', 0);
+            $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_WS, '❌ Decoded payload is not an array', 0);
             return '';
         }
 
@@ -356,10 +397,10 @@ class Remote3CoreManager extends IPSModuleStrict
         if (is_string($payloadPreview) && strlen($payloadPreview) > 1200) {
             $payloadPreview = substr($payloadPreview, 0, 1200) . '…';
         }
-        $this->SendDebug(__FUNCTION__, '📥 Payload: ' . $payloadPreview, 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, '📥 Payload: ' . $payloadPreview, 0);
 
         if (!isset($data['msg'])) {
-            $this->SendDebug(__FUNCTION__, '⚠️ No msg field in payload', 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_WS, '⚠️ No msg field in payload', 0);
             return '';
         }
 
@@ -371,56 +412,56 @@ class Remote3CoreManager extends IPSModuleStrict
             case 'auth_required':
             case 'auth_ok':
             case 'authentication':
-            $this->SendDebug(__FUNCTION__, 'Authentication: ' . json_encode($data['msg_data'] ?? null, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), 0);
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_AUTH, 'Authentication: ' . json_encode($data['msg_data'] ?? null, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), 0);
                 break;
 
             case 'power_mode_change':
-                $this->SendDebug(__FUNCTION__, 'Power Mode Change: ' . json_encode($data['msg_data'] ?? null, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), 0);
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_WS, 'Power Mode Change: ' . json_encode($data['msg_data'] ?? null, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), 0);
                 $this->SendPayloadToChildren($data);
                 break;
 
             case 'ping':
-                $this->SendDebug(__FUNCTION__, '🔐 System message: ' . $data['msg'], 0);
+                $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, '🔐 System message: ' . $data['msg'], 0);
                 break;
 
             // --- WebSocket documented events ---
             case 'activity_change':
-                $this->SendDebug(__FUNCTION__, '⚡ Activity change: ' . json_encode($data['msg_data'] ?? null, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), 0);
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_WS, '⚡ Activity change: ' . json_encode($data['msg_data'] ?? null, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), 0);
                 $this->SendPayloadToChildren($data);
                 break;
 
             case 'battery_state_change':
             case 'battery_status':
-            $this->SendDebug(__FUNCTION__, '🔋 Battery change: ' . json_encode($data['msg_data'] ?? null, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), 0);
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_WS, '🔋 Battery change: ' . json_encode($data['msg_data'] ?? null, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), 0);
                 $this->SendPayloadToChildren($data);
                 break;
 
             case 'entity_change':
-                $this->SendDebug(__FUNCTION__, 'Entity change: ' . json_encode($data['msg_data'] ?? null, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), 0);
+                $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_ENTITY, 'Entity change: ' . json_encode($data['msg_data'] ?? null, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), 0);
                 $this->SendPayloadToChildren($data);
                 break;
 
             case 'connected_devices':
-                $this->SendDebug(__FUNCTION__, '🔌 Connected devices: ' . json_encode($data['msg_data'] ?? null, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), 0);
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_WS, '🔌 Connected devices: ' . json_encode($data['msg_data'] ?? null, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), 0);
                 break;
 
             case 'display_state_change':
-                $this->SendDebug(__FUNCTION__, '💡 Display state change: ' . json_encode($data['msg_data'] ?? null, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), 0);
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_WS, '💡 Display state change: ' . json_encode($data['msg_data'] ?? null, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), 0);
                 $this->SendPayloadToChildren($data);
                 break;
 
             case 'remote_event':
-                $this->SendDebug(__FUNCTION__, '🎮 Remote event: ' . json_encode($data['msg_data'] ?? null, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), 0);
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_WS, '🎮 Remote event: ' . json_encode($data['msg_data'] ?? null, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), 0);
                 $this->SendPayloadToChildren($data);
                 break;
 
             case 'error':
-                $this->SendDebug(__FUNCTION__, '❗ Error: ' . json_encode($data['msg_data'] ?? null, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), 0);
+                $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_WS, '❗ Error: ' . json_encode($data['msg_data'] ?? null, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), 0);
                 break;
 
             // --- end WebSocket events ---
             default:
-                $this->SendDebug(__FUNCTION__, '❔ Unknown msg: ' . (string)$data['msg'], 0);
+                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_WS, '❔ Unknown msg: ' . (string)$data['msg'], 0);
                 break;
         }
 
@@ -446,9 +487,9 @@ class Remote3CoreManager extends IPSModuleStrict
      * @param array $channels Array of channel names to (un)subscribe.
      * @param bool $subscribe True to subscribe, false to unsubscribe.
      */
-    protected function ManageEventSubscription(array $channels, bool $subscribe = true)
+    protected function ManageEventSubscription(array $channels, bool $subscribe = true): void
     {
-        $this->SendDebug(__FUNCTION__, ($subscribe ? '🔔 Subscribe' : '🔕 Unsubscribe') . ' to channels: ' . json_encode($channels), 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_WS, ($subscribe ? '🔔 Subscribe' : '🔕 Unsubscribe') . ' to channels: ' . json_encode($channels), 0);
 
         $payload = [
             'kind' => 'req',
@@ -465,11 +506,11 @@ class Remote3CoreManager extends IPSModuleStrict
     protected function SendDataToWebsocketClient(array $payload): void
     {
         // Log the payload itself (not the full message)
-        $this->SendDebug(__FUNCTION__, '➡️ Sending payload to I/O: ' . json_encode($payload), 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, '➡️ Sending payload to I/O: ' . json_encode($payload), 0);
         $parentID = IPS_GetInstance($this->InstanceID)['ConnectionID'];
         if ($parentID > 0) {
             $message = json_encode($payload);
-            $this->SendDebug(__FUNCTION__, '📤 WSC_SendMessage an ' . $parentID . ': ' . $message, 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, '📤 WSC_SendMessage an ' . $parentID . ': ' . $message, 0);
             WSC_SendMessage($parentID, $message);
         }
     }
@@ -484,7 +525,7 @@ class Remote3CoreManager extends IPSModuleStrict
             'id' => time(),
             'msg' => 'get_event_channels'
         ];
-        $this->SendDebug(__FUNCTION__, '📡 Requesting available channels: ' . json_encode($payload), 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_WS, '📡 Requesting available channels: ' . json_encode($payload), 0);
         $this->SendDataToWebsocketClient($payload);
     }
 
@@ -498,7 +539,7 @@ class Remote3CoreManager extends IPSModuleStrict
             'id' => time(),
             'msg' => 'get_event_subscriptions'
         ];
-        $this->SendDebug(__FUNCTION__, '📡 Requesting active subscriptions: ' . json_encode($payload), 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_WS, '📡 Requesting active subscriptions: ' . json_encode($payload), 0);
         $this->SendDataToWebsocketClient($payload);
     }
 
@@ -524,7 +565,7 @@ class Remote3CoreManager extends IPSModuleStrict
      */
     public function RefreshAllData(): void
     {
-        $this->SendDebug(__FUNCTION__, '🔄 Manual refresh requested', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_API, '🔄 Manual refresh requested', 0);
         $this->StartInitialRefresh(true);
     }
 
@@ -544,7 +585,7 @@ class Remote3CoreManager extends IPSModuleStrict
 
         if (count($queue) === 0) {
             $this->SetTimerInterval('RefreshStep', 0);
-            $this->SendDebug(__FUNCTION__, '✅ Refresh queue finished', 0);
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_API, '✅ Refresh queue finished', 0);
             return;
         }
 
@@ -555,7 +596,7 @@ class Remote3CoreManager extends IPSModuleStrict
         $params = is_array($item) ? ($item['params'] ?? null) : null;
 
         if (!is_string($method) || $method === '') {
-            $this->SendDebug(__FUNCTION__, '⚠️ Invalid queue item (missing method)', 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_API, '⚠️ Invalid queue item (missing method)', 0);
             return;
         }
 
@@ -580,11 +621,11 @@ class Remote3CoreManager extends IPSModuleStrict
         ];
 
         if (!in_array($method, $allowed, true) || !method_exists($this, $method)) {
-            $this->SendDebug(__FUNCTION__, '⚠️ Method not allowed or not found: ' . $method, 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_API, '⚠️ Method not allowed or not found: ' . $method, 0);
             return;
         }
 
-        $this->SendDebug(__FUNCTION__, '➡️ Refresh step: ' . $method, 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_API, '➡️ Refresh step: ' . $method, 0);
 
         try {
             // Some calls require params
@@ -593,9 +634,9 @@ class Remote3CoreManager extends IPSModuleStrict
             } else {
                 $result = $this->{$method}();
             }
-            $this->SendDebug(__FUNCTION__, '⬅️ Result: ' . (is_string($result) ? $result : json_encode($result)), 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_API, '⬅️ Result: ' . (is_string($result) ? $result : json_encode($result)), 0);
         } catch (Throwable $e) {
-            $this->SendDebug(__FUNCTION__, '❌ Exception: ' . $e->getMessage(), 0);
+            $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_API, '❌ Exception: ' . $e->getMessage(), 0);
         }
 
         // Continue quickly until queue is empty
@@ -618,20 +659,20 @@ class Remote3CoreManager extends IPSModuleStrict
         $pass = $this->ReadPropertyString('web_config_pass');
 
         if ($host === '' || $pass === '') {
-            $this->SendDebug(__FUNCTION__, '⏸️ Skip refresh (Host/Password missing).', 0);
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_API, '⏸️ Skip refresh (Host/Password missing).', 0);
             return;
         }
 
         // Ensure a valid API key exists (this will also auto-upload the icon once)
         if (!$this->EnsureApiKey()) {
-            $this->SendDebug(__FUNCTION__, '⏸️ Skip refresh (API key not available).', 0);
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_API, '⏸️ Skip refresh (API key not available).', 0);
             return;
         }
 
         // Avoid repeatedly enqueuing the same initial refresh while connected
         $already = $this->GetBuffer('InitialRefreshEnqueued');
         if (!$force && $already === '1') {
-            $this->SendDebug(__FUNCTION__, '⏸️ Initial refresh already enqueued.', 0);
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_API, '⏸️ Initial refresh already enqueued.', 0);
             return;
         }
 
@@ -653,7 +694,7 @@ class Remote3CoreManager extends IPSModuleStrict
         $this->SetBuffer('RefreshQueue', json_encode($queue));
         $this->SetBuffer('InitialRefreshEnqueued', '1');
 
-        $this->SendDebug(__FUNCTION__, '🧾 Enqueued refresh calls: ' . count($queue), 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_API, '🧾 Enqueued refresh calls: ' . count($queue), 0);
 
         // Start the step timer shortly
         $this->SetTimerInterval('RefreshStep', 500);
@@ -670,7 +711,7 @@ class Remote3CoreManager extends IPSModuleStrict
         }
 
         if ($Message == IPS_KERNELMESSAGE && $Data[0] == KR_READY) {
-            $this->SendDebug(__FUNCTION__, "Kernel Ready", 0);
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_GEN, 'Kernel Ready', 0);
         }
     }
 
@@ -679,12 +720,12 @@ class Remote3CoreManager extends IPSModuleStrict
     private function SendRestRequest(string $method, string $endpoint, array $params = []): array
     {
         if (!$this->EnsureApiKey()) {
-            $this->SendDebug(__FUNCTION__, '❌ Kein API-Key verfügbar.', 0);
+            $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_API, '❌ Kein API-Key verfügbar.', 0);
             return ['error' => 'API key missing or could not be created'];
         }
 
         $url = 'http://' . $this->ReadPropertyString('host') . '/api' . $endpoint;
-        $this->SendDebug(__FUNCTION__, "🔗 URL: $url", 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_API, "🔗 URL: $url", 0);
 
         $ch = curl_init();
 
@@ -715,17 +756,17 @@ class Remote3CoreManager extends IPSModuleStrict
         $error = curl_error($ch);
         curl_close($ch);
 
-        $this->SendDebug(__FUNCTION__, "📥 HTTP-Code: $httpCode", 0);
-        $this->SendDebug(__FUNCTION__, "📥 Response: $result", 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_API, "📥 HTTP-Code: $httpCode", 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_API, "📥 Response: $result", 0);
 
         if ($error !== '') {
-            $this->SendDebug(__FUNCTION__, "❌ CURL Error: $error", 0);
+            $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_API, "❌ CURL Error: $error", 0);
             return ['error' => $error];
         }
 
         // Guard clause: $result must be a valid string
         if ($result === false) {
-            $this->SendDebug(__FUNCTION__, "❌ Leere oder fehlerhafte Antwort von curl_exec()", 0);
+            $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_API, "❌ Leere oder fehlerhafte Antwort von curl_exec()", 0);
             return ['error' => 'Invalid CURL response'];
         }
 
@@ -735,80 +776,80 @@ class Remote3CoreManager extends IPSModuleStrict
     protected function CeckResponse($response)
     {
         if (!is_array($response)) {
-            $this->SendDebug(__FUNCTION__, '❌ Ungültige Antwortstruktur (kein Array).', 0);
+            $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_API, '❌ Ungültige Antwortstruktur (kein Array).', 0);
             return json_encode(['success' => false, 'message' => 'Invalid response']);
         }
 
-        $this->SendDebug(__FUNCTION__, '✅ Antwort erhalten: ' . json_encode($response), 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_API, '✅ Antwort erhalten: ' . json_encode($response), 0);
         return json_encode(['success' => true, 'data' => $response]);
     }
 
     protected function CallGetVersion()
     {
-        $this->SendDebug(__FUNCTION__, '⏳ Requesting /pub/version...', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_API, '⏳ Requesting /pub/version...', 0);
         $response = $this->SendRestRequest('GET', '/pub/version');
         return $this->CeckResponse($response);
     }
 
     protected function CallGetStatus()
     {
-        $this->SendDebug(__FUNCTION__, '⏳ Requesting /pub/status...', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_API, '⏳ Requesting /pub/status...', 0);
         $response = $this->SendRestRequest('GET', '/pub/status');
         return $this->CeckResponse($response);
     }
 
     protected function CallGetHealthCheck()
     {
-        $this->SendDebug(__FUNCTION__, '⏳ Requesting /pub/health_check...', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_API, '⏳ Requesting /pub/health_check...', 0);
         $response = $this->SendRestRequest('GET', '/pub/health_check');
         return $this->CeckResponse($response);
     }
 
     protected function CallGetScopes()
     {
-        $this->SendDebug(__FUNCTION__, '⏳ Requesting /auth/scopes...', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_API, '⏳ Requesting /auth/scopes...', 0);
         $response = $this->SendRestRequest('GET', '/auth/scopes');
         return $this->CeckResponse($response);
     }
 
     protected function CallGetExternalSystems()
     {
-        $this->SendDebug(__FUNCTION__, '⏳ Requesting /auth/external...', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_API, '⏳ Requesting /auth/external...', 0);
         $response = $this->SendRestRequest('GET', '/auth/external');
         return $this->CeckResponse($response);
     }
 
     protected function CallGetSystemInformation()
     {
-        $this->SendDebug(__FUNCTION__, '⏳ Requesting /system...', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_API, '⏳ Requesting /system...', 0);
         $response = $this->SendRestRequest('GET', '/system');
         return $this->CeckResponse($response);
     }
 
     protected function CallGetBatteryState()
     {
-        $this->SendDebug(__FUNCTION__, '⏳ Requesting /system/power/battery...', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_API, '⏳ Requesting /system/power/battery...', 0);
         $response = $this->SendRestRequest('GET', '/system/power/battery');
         return $this->CeckResponse($response);
     }
 
     protected function CallGetNetworkConfig()
     {
-        $this->SendDebug(__FUNCTION__, '⏳ Requesting /cfg/network...', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_API, '⏳ Requesting /cfg/network...', 0);
         $response = $this->SendRestRequest('GET', '/cfg/network');
         return $this->CeckResponse($response);
     }
 
     protected function CallGetDisplayConfig()
     {
-        $this->SendDebug(__FUNCTION__, '⏳ Requesting /cfg/display...', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_API, '⏳ Requesting /cfg/display...', 0);
         $response = $this->SendRestRequest('GET', '/cfg/display');
         return $this->CeckResponse($response);
     }
 
     protected function CallGetDocks()
     {
-        $this->SendDebug(__FUNCTION__, '⏳ Requesting /docks...', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_API, '⏳ Requesting /docks...', 0);
         $response = $this->SendRestRequest('GET', '/docks');
         return $this->CeckResponse($response);
     }
@@ -824,7 +865,7 @@ class Remote3CoreManager extends IPSModuleStrict
      */
     public function CallApi(string $method, string $endpoint, string $params = ''): string
     {
-        $this->SendDebug(__FUNCTION__, 'method=' . $method . ' endpoint=' . $endpoint, 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_API, 'method=' . $method . ' endpoint=' . $endpoint, 0);
 
         // In IPSModuleStrict, only simple types are allowed in public methods.
         // Therefore params must be passed as JSON string.
@@ -835,7 +876,7 @@ class Remote3CoreManager extends IPSModuleStrict
             if (is_array($decoded)) {
                 $payload = $decoded;
             } else {
-                $this->SendDebug(__FUNCTION__, '⚠️ params JSON could not be decoded, ignoring params', 0);
+                $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_API, '⚠️ params JSON could not be decoded, ignoring params', 0);
             }
         }
 
@@ -845,9 +886,9 @@ class Remote3CoreManager extends IPSModuleStrict
 
     // === REST API Command Methods ===
 
-    protected function CallGetActivities()
+    protected function CallGetActivities(): false|string
     {
-        $this->SendDebug(__FUNCTION__, '⏳ Requesting /activities (paginated)...', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_API, '⏳ Requesting /activities (paginated)...', 0);
 
         $limit = 50;
         $page = 1;
@@ -859,12 +900,12 @@ class Remote3CoreManager extends IPSModuleStrict
 
         while ($page <= $maxPages) {
             $endpoint = '/activities?page=' . $page . '&limit=' . $limit;
-            $this->SendDebug(__FUNCTION__, '➡️ Page ' . $page . ' GET ' . $endpoint, 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_API, '➡️ Page ' . $page . ' GET ' . $endpoint, 0);
 
             $response = $this->SendRestRequest('GET', $endpoint);
 
             if (!is_array($response)) {
-                $this->SendDebug(__FUNCTION__, '❌ Invalid response (not an array) on page ' . $page, 0);
+                $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_API, '❌ Invalid response (not an array) on page ' . $page, 0);
                 // Return error structure through CeckResponse
                 return $this->CeckResponse($response);
             }
@@ -886,7 +927,7 @@ class Remote3CoreManager extends IPSModuleStrict
             }
 
             $count = is_array($items) ? count($items) : 0;
-            $this->SendDebug(__FUNCTION__, '⬅️ Page ' . $page . ' items=' . $count, 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_API, '⬅️ Page ' . $page . ' items=' . $count, 0);
 
             if ($count === 0) {
                 break;
@@ -916,7 +957,7 @@ class Remote3CoreManager extends IPSModuleStrict
             $page++;
         }
 
-        $this->SendDebug(__FUNCTION__, '✅ Total activities collected: ' . count($all), 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_API, '✅ Total activities collected: ' . count($all), 0);
 
         // Return a single combined structure, keeping backward compatibility by using `results`
         return $this->CeckResponse(['results' => $all]);
@@ -925,14 +966,14 @@ class Remote3CoreManager extends IPSModuleStrict
     protected function CallSendEntityCommand($params)
     {
         if (!isset($params['entity_id']) || !isset($params['cmd_id'])) {
-            $this->SendDebug(__FUNCTION__, '❌ Fehlende Parameter (entity_id oder cmd_id)', 0);
+            $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_ENTITY, '❌ Fehlende Parameter (entity_id oder cmd_id)', 0);
             return json_encode(['success' => false, 'message' => 'entity_id und cmd_id erforderlich']);
         }
 
         $entityId = $params['entity_id'];
         $cmdId = $params['cmd_id'];
 
-        $this->SendDebug(__FUNCTION__, "➡️ Sende Command an Entity: $entityId mit Befehl: $cmdId", 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_ENTITY, "➡️ Sende Command an Entity: $entityId mit Befehl: $cmdId", 0);
 
         $endpoint = '/entities/' . urlencode($entityId) . '/command';
         $payload = [
@@ -944,37 +985,37 @@ class Remote3CoreManager extends IPSModuleStrict
         return $this->CeckResponse($response);
     }
 
-    protected function CallGetDockDiscovery()
+    protected function CallGetDockDiscovery(): false|string
     {
-        $this->SendDebug(__FUNCTION__, '⏳ Requesting /docks/discover...', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_API, '⏳ Requesting /docks/discover...', 0);
         $response = $this->SendRestRequest('GET', '/docks/discover');
         return $this->CeckResponse($response);
     }
 
-    protected function CallGetSoundConfig()
+    protected function CallGetSoundConfig(): false|string
     {
-        $this->SendDebug(__FUNCTION__, '⏳ Requesting /cfg/sound...', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_API, '⏳ Requesting /cfg/sound...', 0);
         $response = $this->SendRestRequest('GET', '/cfg/sound');
         return $this->CeckResponse($response);
     }
 
-    protected function CallGetRemotes()
+    protected function CallGetRemotes(): false|string
     {
-        $this->SendDebug(__FUNCTION__, '⏳ Requesting /remotes...', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_API, '⏳ Requesting /remotes...', 0);
         $response = $this->SendRestRequest('GET', '/remotes');
         return $this->CeckResponse($response);
     }
 
-    protected function CallGetEntities()
+    protected function CallGetEntities(): false|string
     {
-        $this->SendDebug(__FUNCTION__, '⏳ Requesting /entities...', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_API, '⏳ Requesting /entities...', 0);
         $response = $this->SendRestRequest('GET', '/entities');
         return $this->CeckResponse($response);
     }
 
-    protected function CallGetIntg()
+    protected function CallGetIntg(): false|string
     {
-        $this->SendDebug(__FUNCTION__, '⏳ Requesting /intg...', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_API, '⏳ Requesting /intg...', 0);
         $response = $this->SendRestRequest('GET', '/entities');
         return $this->CeckResponse($response);
     }
@@ -987,14 +1028,14 @@ class Remote3CoreManager extends IPSModuleStrict
     {
         $parentID = IPS_GetInstance($this->InstanceID)['ConnectionID'];
         if ($parentID <= 0) {
-            $this->SendDebug(__FUNCTION__, '⛔ No parent I/O instance available for reconnect.', 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_WS, '⛔ No parent I/O instance available for reconnect.', 0);
             return;
         }
 
         // Avoid starting multiple cycles in parallel
         $phase = (int)($this->GetBuffer('WsReconnectPhase') !== '' ? $this->GetBuffer('WsReconnectPhase') : '0');
         if ($phase !== 0) {
-            $this->SendDebug(__FUNCTION__, '⏳ Reconnect already running (phase=' . $phase . ')', 0);
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_WS, '⏳ Reconnect already running (phase=' . $phase . ')', 0);
             return;
         }
 
@@ -1003,7 +1044,7 @@ class Remote3CoreManager extends IPSModuleStrict
         $this->SetBuffer('WsReconnectAttempts', (string)$attempts);
         $this->SetBuffer('WsReconnectPhase', '1');
 
-        $this->SendDebug(__FUNCTION__, '🧯 Starting WS reconnect cycle (attempt ' . $attempts . '): ' . $reason, 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_WS, '🧯 Starting WS reconnect cycle (attempt ' . $attempts . '): ' . $reason, 0);
 
         // Phase 1 will disable the parent, Phase 2 will re-enable it.
         $this->SetTimerInterval('WsReconnectStep', 250);
@@ -1028,7 +1069,7 @@ class Remote3CoreManager extends IPSModuleStrict
         $attempts = (int)($this->GetBuffer('WsReconnectAttempts') !== '' ? $this->GetBuffer('WsReconnectAttempts') : '0');
 
         if ($phase === 1) {
-            $this->SendDebug(__FUNCTION__, '🔌 Phase 1: disabling WebSocket Client ' . $parentID, 0);
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_WS, '🔌 Phase 1: disabling WebSocket Client ' . $parentID, 0);
             @IPS_SetInstanceStatus($parentID, IS_INACTIVE);
             $this->SetBuffer('WsReconnectPhase', '2');
             $this->SetTimerInterval('WsReconnectStep', 600);
@@ -1036,7 +1077,7 @@ class Remote3CoreManager extends IPSModuleStrict
         }
 
         if ($phase === 2) {
-            $this->SendDebug(__FUNCTION__, '🔧 Phase 2: applying + enabling WebSocket Client ' . $parentID, 0);
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_WS, '🔧 Phase 2: applying + enabling WebSocket Client ' . $parentID, 0);
             @IPS_ApplyChanges($parentID);
             @IPS_SetInstanceStatus($parentID, IS_ACTIVE);
             $this->SetBuffer('WsReconnectPhase', '3');
@@ -1046,10 +1087,10 @@ class Remote3CoreManager extends IPSModuleStrict
 
         if ($phase === 3) {
             $status = IPS_GetInstance($parentID)['InstanceStatus'];
-            $this->SendDebug(__FUNCTION__, '🔍 Phase 3: parent status=' . $status, 0);
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, '🔍 Phase 3: parent status=' . $status, 0);
 
             if ($status === IS_ACTIVE) {
-                $this->SendDebug(__FUNCTION__, '✅ Reconnect successful.', 0);
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_WS, '✅ Reconnect successful.', 0);
                 $this->SetTimerInterval('WsReconnectStep', 0);
                 $this->SetBuffer('WsReconnectPhase', '0');
                 $this->SetBuffer('WsReconnectAttempts', '0');
@@ -1062,13 +1103,13 @@ class Remote3CoreManager extends IPSModuleStrict
 
             // Retry with backoff (max 3 attempts)
             if ($attempts >= 3) {
-                $this->SendDebug(__FUNCTION__, '❌ Reconnect failed after ' . $attempts . ' attempts. Giving up.', 0);
+                $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_WS, '❌ Reconnect failed after ' . $attempts . ' attempts. Giving up.', 0);
                 $this->SetTimerInterval('WsReconnectStep', 0);
                 $this->SetBuffer('WsReconnectPhase', '0');
                 return;
             }
 
-            $this->SendDebug(__FUNCTION__, '⏳ Reconnect not yet active, will retry. attempt=' . $attempts, 0);
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_WS, '⏳ Reconnect not yet active, will retry. attempt=' . $attempts, 0);
             $this->SetBuffer('WsReconnectPhase', '1');
             // backoff 5 seconds
             $this->SetTimerInterval('WsReconnectStep', 5000);
@@ -1089,9 +1130,9 @@ class Remote3CoreManager extends IPSModuleStrict
     private function LoadImageAsBase64(): string
     {
         $path = __DIR__ . '/../libs/unfoldedcircle_logo.png';
-        $this->SendDebug(__FUNCTION__, $path, 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_FORM, $path, 0);
         if (!file_exists($path)) {
-            $this->SendDebug(__FUNCTION__, 'File not found: ' . $path, 0);
+            $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_FORM, 'File not found: ' . $path, 0);
             return '';
         }
         $imageData = file_get_contents($path);
@@ -1105,23 +1146,23 @@ class Remote3CoreManager extends IPSModuleStrict
      */
     public function SyncSystemInfo(): void
     {
-        $this->SendDebug(__FUNCTION__, 'started', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_API, 'started', 0);
 
         $host = $this->ReadPropertyString('host');
         $pass = $this->ReadPropertyString('web_config_pass');
         if ($host === '' || $pass === '') {
-            $this->SendDebug(__FUNCTION__, '❌ Host and Web Configurator password are required.', 0);
+            $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_API, '❌ Host and Web Configurator password are required.', 0);
             return;
         }
 
         if (!$this->EnsureApiKey()) {
-            $this->SendDebug(__FUNCTION__, '❌ API key missing or could not be created.', 0);
+            $this->Debug(__FUNCTION__, self::LV_ERROR, self::TOPIC_API, '❌ API key missing or could not be created.', 0);
             return;
         }
 
         // /system
         $sys = $this->SendRestRequest('GET', '/system');
-        $this->SendDebug(__FUNCTION__, 'System: ' . json_encode($sys), 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_API, 'System: ' . json_encode($sys), 0);
 
         $sysName = is_array($sys) ? (string)($sys['name'] ?? $sys['device_name'] ?? $sys['deviceName'] ?? '') : '';
         $sysHostname = is_array($sys) ? (string)($sys['hostname'] ?? $sys['host_name'] ?? '') : '';
@@ -1134,7 +1175,7 @@ class Remote3CoreManager extends IPSModuleStrict
 
         // /pub/version
         $ver = $this->SendRestRequest('GET', '/pub/version');
-        $this->SendDebug(__FUNCTION__, 'Version: ' . json_encode($ver), 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_API, 'Version: ' . json_encode($ver), 0);
 
         $sysVersion = is_array($ver) ? (string)($ver['core'] ?? $ver['version'] ?? $ver['firmware'] ?? '') : '';
         $sysVerApi = is_array($ver) ? (string)($ver['api'] ?? $ver['api_version'] ?? $ver['apiVersion'] ?? '') : '';
@@ -1170,7 +1211,7 @@ class Remote3CoreManager extends IPSModuleStrict
 
         // /pub/status (optional)
         $status = $this->SendRestRequest('GET', '/pub/status');
-        $this->SendDebug(__FUNCTION__, 'Status: ' . json_encode($status), 0);
+        $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_API, 'Status: ' . json_encode($status), 0);
 
         // Cache in attributes (used by UI)
         $this->WriteAttributeString('sys_name', $sysName);
@@ -1204,7 +1245,7 @@ class Remote3CoreManager extends IPSModuleStrict
         $this->UpdateFormField('ver_api', 'value', $sysVerApi);
         $this->UpdateFormField('https_port', 'value', $sysHttps);
 
-        $this->SendDebug(__FUNCTION__, 'done', 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_API, 'done', 0);
     }
 
     /**
@@ -1392,8 +1433,154 @@ class Remote3CoreManager extends IPSModuleStrict
                 'caption' => 'Symcon UUID',
                 'enabled' => false,
                 'value' => $symcon_uuid
+            ],
+            [
+                'type' => 'CheckBox',
+                'name' => 'expert_debug',
+                'caption' => '🧪 Expert Debug'
             ]
         ];
+
+        // Show debug settings only when enabled
+        if ($this->ReadPropertyBoolean('expert_debug')) {
+            $form[] = [
+                'type' => 'ExpansionPanel',
+                'caption' => '🪲 Debugging',
+                'items' => [
+                    [
+                        'type' => 'Label',
+                        'caption' => 'Use filters to reduce debug output to specific entities/IDs/IPs. Example topics: WS, HOOK, ENTITY, VM, AUTH.'
+                    ],
+                    [
+                        'type' => 'Select',
+                        'name' => 'debug_level',
+                        'caption' => 'Minimum debug level',
+                        'options' => [
+                            ['caption' => 'BASIC', 'value' => self::LV_BASIC],
+                            ['caption' => 'ERROR', 'value' => self::LV_ERROR],
+                            ['caption' => 'WARN', 'value' => self::LV_WARN],
+                            ['caption' => 'INFO', 'value' => self::LV_INFO],
+                            ['caption' => 'TRACE', 'value' => self::LV_TRACE],
+                        ]
+                    ],
+                    [
+                        'type' => 'CheckBox',
+                        'name' => 'debug_filter_enabled',
+                        'caption' => 'Enable filters'
+                    ],
+                    // Available topics: GEN, AUTH, HOOK, WS, ENTITY, VM, DISCOVERY, API, FORM, EXT
+                    [
+                        'type' => 'List',
+                        'name' => 'debug_topics_cfg',
+                        'caption' => 'Topics',
+                        'rowCount' => 10,
+                        'add' => false,
+                        'delete' => false,
+                        'columns' => [
+                            [
+                                'caption' => 'Show',
+                                'name' => 'enabled',
+                                'width' => '80px',
+                                'add' => true,
+                                'edit' => ['type' => 'CheckBox']
+                            ],
+                            [
+                                'caption' => 'Topic',
+                                'name' => 'topic',
+                                'width' => '120px',
+                                'add' => '',
+                                'edit' => ['type' => 'Label']
+                            ],
+                            [
+                                'caption' => 'Description',
+                                'name' => 'description',
+                                'width' => 'auto',
+                                'add' => '',
+                                'edit' => ['type' => 'Label']
+                            ]
+                        ],
+                        'values' => $this->BuildDebugTopicsConfig()
+                    ],
+                    [
+                        'type' => 'Label',
+                        'caption' => 'Filter by device/object (Symcon): select an instance to reduce debug output for its mapped variables.'
+                    ],
+                    [
+                        'type' => 'List',
+                        'name' => 'debug_filter_instances',
+                        'caption' => 'Devices / Instances',
+                        'rowCount' => 5,
+                        'add' => true,
+                        'delete' => true,
+                        'columns' => [
+                            [
+                                'caption' => 'Instance',
+                                'name' => 'instance_id',
+                                'width' => 'auto',
+                                'add' => 0,
+                                'edit' => [
+                                    'type' => 'SelectInstance'
+                                ]
+                            ]
+                        ]
+                    ],
+                    [
+                        'type' => 'ValidationTextBox',
+                        'name' => 'debug_var_ids',
+                        'caption' => 'Var/Object IDs (CSV)'
+                    ],
+                    [
+                        'type' => 'Label',
+                        'caption' => 'Client IP filter: select one or more Remote client IPs to reduce debug output.'
+                    ],
+                    [
+                        'type' => 'List',
+                        'name' => 'debug_client_ips_cfg',
+                        'caption' => 'Client IPs',
+                        'rowCount' => 5,
+                        'add' => true,
+                        'delete' => true,
+                        'columns' => [
+                            [
+                                'caption' => 'Client IP',
+                                'name' => 'ip',
+                                'width' => 'auto',
+                                'add' => '',
+                                'edit' => [
+                                    'type' => 'Select',
+                                    'options' => $this->GetKnownClientIPOptions()
+                                ]
+                            ]
+                        ],
+                        'values' => $this->BuildDebugClientIPsConfig()
+                    ],
+                    [
+                        'type' => 'ValidationTextBox',
+                        'name' => 'debug_text_filter',
+                        'caption' => 'Text filter (substring or regex)'
+                    ],
+                    [
+                        'type' => 'CheckBox',
+                        'name' => 'debug_text_is_regex',
+                        'caption' => 'Text filter is regex'
+                    ],
+                    [
+                        'type' => 'CheckBox',
+                        'name' => 'debug_strict_match',
+                        'caption' => 'Log matches only (strict)'
+                    ],
+                    [
+                        'type' => 'NumberSpinner',
+                        'name' => 'debug_throttle_ms',
+                        'caption' => 'Throttle (ms, 0=off)',
+                        'minimum' => 0,
+                        'maximum' => 60000
+                    ]
+                ]
+            ];
+        }
+
+
         return $form;
     }
 

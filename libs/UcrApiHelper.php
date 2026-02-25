@@ -19,6 +19,32 @@ class UcrApiHelper
     }
 
     /**
+     * Decide CURLOPT_IPRESOLVE for the given host.
+     *
+     * - If host is a literal IPv4 address, force IPv4.
+     * - If host is a literal IPv6 address (incl. ULA/GUA/link-local), force IPv6.
+     * - If host is a hostname, do not force resolution (let system decide).
+     */
+    private function GetCurlIpResolveOption(string $host): ?int
+    {
+        $host = trim($host);
+        if ($host === '') {
+            return null;
+        }
+
+        // Strip zone-id if present (fe80::1%8)
+        $hostNoZone = explode('%', $host, 2)[0];
+
+        if (filter_var($hostNoZone, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            return CURL_IPRESOLVE_V4;
+        }
+        if (filter_var($hostNoZone, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
+            return CURL_IPRESOLVE_V6;
+        }
+        return null;
+    }
+
+    /**
      * Choose the best host for REST operations.
      *
      * If the discovered host is IPv6 link-local (fe80::/10), prefer a non-link-local alternative
@@ -251,7 +277,7 @@ class UcrApiHelper
      * Ensure an API key exists and is valid.
      * Returns true if a valid key is stored in the module attribute `api_key`.
      */
-    private function EnsureApiKey(bool $forceRenew = false): bool
+    public function EnsureApiKey(bool $forceRenew = false): bool
     {
         $this->dbg(__FUNCTION__, 'started' . ($forceRenew ? ' (forceRenew=true)' : ''), 0, 'API', 0);
 
@@ -296,7 +322,7 @@ class UcrApiHelper
         // Provide zone-id to the HTTP closure without changing all its call sites
         $GLOBALS['__ucr_zoneId'] = $zoneId ?? '';
         // --- helper: HTTP request ---
-        $httpRequest = function (string $method, string $url, array $headers = [], ?string $basicUser = null, ?string $basicPass = null, ?string $body = null): array {
+        $httpRequest = function (string $method, string $url, array $headers = [], ?string $basicUser = null, ?string $basicPass = null, ?string $body = null) use ($host): array {
             $this->dbg(__FUNCTION__, '➡️ HTTP ' . strtoupper($method) . ' ' . $url, 0, 'API', 0);
 
             $ch = curl_init($url);
@@ -305,9 +331,14 @@ class UcrApiHelper
                 CURLOPT_CUSTOMREQUEST => strtoupper($method),
                 CURLOPT_TIMEOUT => 10,
                 CURLOPT_HTTPHEADER => $headers,
-                // Force IPv4 resolution to avoid IPv6 stack issues during REST calls
-                CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4
             ];
+
+            // Resolve strategy: only force when we have an IP literal.
+            $ipResolve = $this->GetCurlIpResolveOption($host);
+            if ($ipResolve !== null) {
+                $opts[CURLOPT_IPRESOLVE] = $ipResolve;
+                $this->dbg(__FUNCTION__, '🧭 CURLOPT_IPRESOLVE=' . ($ipResolve === CURL_IPRESOLVE_V6 ? 'V6' : 'V4'), 0, 'API', 0);
+            }
 
             // For IPv6 link-local addresses, libcurl on some platforms behaves more reliably
             // when the outgoing interface is pinned. If the configured host contains a zone-id
@@ -540,6 +571,53 @@ class UcrApiHelper
     }
 
     /**
+     * Ensure REST API access is possible.
+     *
+     * This helper will try to obtain a valid API key (validate / renew / create).
+     * If no key can be obtained, the caller should request a PIN (web_config_pass).
+     *
+     * @param string $remoteHost Optional host override. If empty, uses stored attribute `remote_host`.
+     * @return array{ok:bool, api_key:string, need_pin:bool, reason:string}
+     */
+    public function EnsureRemoteApiAccess(string $remoteHost = ''): array
+    {
+        $remoteHost = trim($remoteHost);
+        if ($remoteHost === '') {
+            $remoteHost = trim((string)$this->ctx->Ext_ReadAttributeString('remote_host'));
+        }
+
+        if ($remoteHost === '') {
+            $this->dbg(__FUNCTION__, '❌ remote_host is empty', 0, 'SETUP', 0);
+            return ['ok' => false, 'api_key' => '', 'need_pin' => true, 'reason' => 'remote_host_empty'];
+        }
+
+        // PIN is stored as attribute (web_config_pass)
+        $storedPin = trim((string)$this->ctx->Ext_ReadAttributeString('web_config_pass'));
+
+        // Keep host consistent for subsequent calls (including GetApiKey/EnsureApiKey)
+        $this->ctx->Ext_WriteAttributeString('remote_host', $remoteHost);
+
+        // Try to obtain a valid API key (this will validate/renew/create if possible)
+        $this->dbg(__FUNCTION__, '🔎 EnsureRemoteApiAccess → trying EnsureApiKey for host ' . $remoteHost, 0, 'SETUP', 0);
+
+        $ok = $this->EnsureApiKey(false);
+        $apiKey = trim((string)$this->ctx->Ext_ReadAttributeString('api_key'));
+
+        if ($ok && $apiKey !== '') {
+            $this->dbg(__FUNCTION__, '✅ Remote API access OK (api_key_ok)', 0, 'SETUP', 0);
+            return ['ok' => true, 'api_key' => $apiKey, 'need_pin' => false, 'reason' => 'api_key_ok'];
+        }
+
+        $this->dbg(__FUNCTION__, '❌ Remote API access failed → PIN required', 0, 'SETUP', 0);
+
+        // No API key => PIN is required (missing or wrong/outdated)
+        if ($storedPin !== '') {
+            return ['ok' => false, 'api_key' => '', 'need_pin' => true, 'reason' => 'stored_pin_no_key'];
+        }
+        return ['ok' => false, 'api_key' => '', 'need_pin' => true, 'reason' => 'no_pin'];
+    }
+
+    /**
      * Public accessor used by modules to obtain a valid API key.
      * Will validate/create a key once required properties are present.
      */
@@ -686,9 +764,14 @@ class UcrApiHelper
             CURLOPT_CUSTOMREQUEST => 'POST',
             CURLOPT_HTTPHEADER => $headers,
             CURLOPT_POSTFIELDS => $postFields,
-            // Force IPv4 resolution to avoid IPv6 stack issues during REST calls
-            CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4
         ];
+
+        // Resolve strategy: only force when we have an IP literal.
+        $ipResolve = $this->GetCurlIpResolveOption($host);
+        if ($ipResolve !== null) {
+            $curlOpts[CURLOPT_IPRESOLVE] = $ipResolve;
+            $this->dbg(__FUNCTION__, '🧭 CURLOPT_IPRESOLVE=' . ($ipResolve === CURL_IPRESOLVE_V6 ? 'V6' : 'V4'), 0, 'API', 0);
+        }
 
         // Same as in EnsureApiKey(): numeric zone-ids are common on Windows (ifIndex) but not accepted by CURLOPT_INTERFACE.
         // Rely on the zone in the IPv6 literal instead.

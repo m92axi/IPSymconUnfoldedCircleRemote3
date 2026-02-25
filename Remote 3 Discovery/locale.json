@@ -22,7 +22,22 @@
             "Remote 3 Discovery created.": "Remote 3 Discovery erstellt.",
             "Interface closed.": "Schnittstelle geschlossen.",
             "Please enter the Remote 3 web configuration password before creating instances.": "Bitte gebe das Remote 3 Web-Konfigurations-Passwort ein, bevor Instanzen erstellt werden.",
-            "Please check the Remote 3 web configuration password before creating instances and update it.": "Bitte prüfe das Remote 3 Web-Konfigurations-Passwort vor dem Erstellen von Instanzen und aktualisiere es bei Bedarf."
+          "Please check the Remote 3 web configuration password before creating instances and update it.": "Bitte prüfe das Remote 3 Web-Konfigurations-Passwort vor dem Erstellen von Instanzen und aktualisiere es bei Bedarf.",
+          "Debug Level": "Debug Level",
+          "🧪 Expert Debug": "🧪 Experten-Debug",
+          "🪲 Debugging": "🪲 Debugging",
+          "Use filters to reduce debug output to specific entities/IDs/IPs. Example topics: WS, HOOK, ENTITY, VM, AUTH.": "Nutze Filter, um die Debug-Ausgabe auf bestimmte Entities/IDs/IPs zu reduzieren. Beispiel-Themen: WS, HOOK, ENTITY, VM, AUTH.",
+          "Minimum debug level": "Minimales Debug-Level",
+          "Enable filters": "Filter aktivieren",
+          "Topics (CSV, empty = all)": "Topics (CSV, leer = alle)",
+          "Entity IDs (CSV)": "Entity-IDs (CSV)",
+          "Var/Object IDs (CSV)": "Var-/Objekt-IDs (CSV)",
+          "Client IPs (CSV)": "Client-IP-Adressen (CSV)",
+          "Text filter (substring or regex)": "Textfilter (Substring oder Regex)",
+          "Text filter is regex": "Textfilter ist Regex",
+          "Log matches only (strict)": "Nur Treffer loggen (strict)",
+          "Throttle (ms, 0=off)": "Throttle (ms, 0=aus)",
+          "Unit": "Einheit"
         }
     }
 }

@@ -38,6 +38,32 @@ trait DebugTrait
         $this->WriteAttributeBoolean($name, $value);
     }
 
+
+    /**
+     * Reads client sessions for debug/UI purposes.
+     *
+     * If the module also uses ClientSessionTrait, prefer its readSessions() implementation.
+     * Otherwise fall back to decoding the attribute directly.
+     */
+    private function Debug_ReadClientSessions(): array
+    {
+        // Prefer ClientSessionTrait implementation if present
+        if (method_exists($this, 'readSessions')) {
+            try {
+                $res = $this->readSessions();
+                if (is_array($res)) {
+                    return $res;
+                }
+            } catch (Throwable $e) {
+                // fall through to attribute decode
+            }
+        }
+
+        $raw = (string)$this->ReadAttributeString('client_sessions');
+        $decoded = json_decode($raw, true);
+        return is_array($decoded) ? $decoded : [];
+    }
+
     // -----------------------------
     // Debug Levels (lowest = BASIC)
     // -----------------------------
@@ -346,6 +372,62 @@ trait DebugTrait
     }
 
     /**
+     * Extracts known client session IPs for use in the whitelist select field.
+     *
+     * @return array Array of ['value' => IP, 'caption' => string]
+     */
+    private function GetKnownClientIPOptions(): array
+    {
+        $sessions = $this->Debug_ReadClientSessions();
+        $options = [];
+
+        foreach ($sessions as $clientKey => $info) {
+            $clientKey = (string)$clientKey;
+            $ip = $clientKey;
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_FORM, '🔎 Option source key=' . $clientKey . ' (colons=' . substr_count($clientKey, ':') . ')', 0);
+
+            // Key format: [IPv6]:port
+            if (preg_match('/^\[(.+)]:(\d+)$/', $clientKey, $m)) {
+                $ip = $m[1];
+            } // Key format: IPv4:port (exactly one colon)
+            elseif (substr_count($clientKey, ':') === 1 && preg_match('/^([^:]+):(\d+)$/', $clientKey, $m)) {
+                $ip = $m[1];
+            }
+            // Otherwise: treat as pure IP (IMPORTANT: IPv6 contains many colons)
+
+            $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_FORM, '✅ Option parsed ip=' . $ip, 0);
+            // Deduplicate
+            $existingValues = array_column($options, 'value');
+            if (!in_array($ip, $existingValues, true)) {
+                $caption = $ip;
+                if (is_array($info) && !empty($info['model'])) {
+                    $caption .= ' (' . $info['model'] . ')';
+                }
+                $options[] = [
+                    'caption' => $caption,
+                    'value' => $ip
+                ];
+            }
+        }
+
+        return $options;
+    }
+
+    /**
+     * Dumps raw and parsed client_sessions attribute and triggers GetKnownClientIPOptions debug.
+     */
+    public function DumpClientSessions(): void
+    {
+        $raw = $this->ReadAttributeString('client_sessions');
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_FORM, '📦 client_sessions (raw)=' . $raw, 0);
+
+        $parsed = $this->Debug_ReadClientSessions();
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_FORM, '📦 client_sessions (parsed)=' . json_encode($parsed), 0);
+
+        $this->GetKnownClientIPOptions(); // triggers detailed option logs
+    }
+
+    /**
      * Test method to manually trigger filtered debug output.
      * Can be called via IPS console or temporary button.
      */
@@ -364,5 +446,47 @@ trait DebugTrait
         $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_VM, '🔁 High frequency event simulation', 0);
 
         $this->Debug(__FUNCTION__, self::LV_BASIC, self::TOPIC_GEN, '✅ TestFilteredDebug executed', 0);
+    }
+
+    private function BuildDebugClientIPsConfig(): array
+    {
+        $raw = (string)$this->ReadPropertyString('debug_client_ips_cfg');
+        $cfg = json_decode($raw, true);
+
+        $existing = [];
+        if (is_array($cfg)) {
+            foreach ($cfg as $row) {
+                if (!is_array($row)) continue;
+                $ip = trim((string)($row['ip'] ?? ''));
+                if ($ip === '') continue;
+                $existing[] = ['ip' => $ip];
+            }
+        }
+
+        return $existing;
+    }
+
+    private function GetConfiguredClientIPs(): array
+    {
+        $ips = [];
+
+        // New list-based config
+        $rows = json_decode((string)$this->ReadPropertyString('debug_client_ips_cfg'), true);
+        if (is_array($rows)) {
+            foreach ($rows as $row) {
+                if (!is_array($row)) continue;
+                $ip = trim((string)($row['ip'] ?? ''));
+                if ($ip !== '') $ips[] = $ip;
+            }
+        }
+
+        // Backward compatible: legacy CSV property (if still present)
+        $legacy = (string)$this->ReadPropertyString('debug_client_ips');
+        if ($legacy !== '') {
+            $ips = array_merge($ips, $this->ParseCsvList($legacy));
+        }
+
+        $ips = array_values(array_unique(array_filter($ips, fn($v) => $v !== '')));
+        return $ips;
     }
 }
