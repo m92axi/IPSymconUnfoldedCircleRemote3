@@ -2556,7 +2556,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $driverId = (string)$this->GetDriverId();
         $url = "http://{$remoteHost}/api/intg/drivers/" . rawurlencode($driverId);
 
-        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_SETUP, '🔎 Reading driver config via REST: GET /api/intg/drivers/' . $driverId, 0);
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_SETUP, '🔎 Reading driver config via REST: GET '. $url . " / " . $driverId, 0);
 
         $ch = curl_init($url);
         curl_setopt_array($ch, [
