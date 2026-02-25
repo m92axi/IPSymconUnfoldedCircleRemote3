@@ -2554,6 +2554,19 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         }
 
         $driverId = (string)$this->GetDriverId();
+
+        // Prüfen, ob es eine IPv6 Adresse mit Zone ID ist
+        if (str_contains($remoteHost, '%')) {
+            // Zerlege die Adresse, um die Zone ID zu kodieren
+            // fe80::1%eth0 -> fe80::1%25eth0
+            $remoteHost = str_replace('%', '%25', $remoteHost);
+        }
+
+        // Falls es eine IPv6 Adresse ist (enthält Doppelpunkt), in Klammern setzen
+        if (str_contains($remoteHost, ':') && !str_starts_with($remoteHost, '[')) {
+            $remoteHost = "[" . $remoteHost . "]";
+        }
+
         $url = "http://{$remoteHost}/api/intg/drivers/" . rawurlencode($driverId);
 
         $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_SETUP, '🔎 Reading driver config via REST: GET '. $url . " / " . $driverId, 0);
