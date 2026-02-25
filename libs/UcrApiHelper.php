@@ -19,6 +19,61 @@ class UcrApiHelper
     }
 
     /**
+     * Safe read of an attribute as string. Works with Ext_* wrappers if present or falls back to Symcon API.
+     */
+    private function CtxReadAttrString(string $ident): string
+    {
+        if (method_exists($this->ctx, 'Ext_ReadAttributeString')) {
+            $v = @$this->ctx->Ext_ReadAttributeString($ident);
+            return is_string($v) ? $v : '';
+        }
+        $v = @$this->ctx->ReadAttributeString($ident);
+        return is_string($v) ? $v : '';
+    }
+
+    /** Safe read of an attribute as bool. */
+    private function CtxReadAttrBool(string $ident): bool
+    {
+        if (method_exists($this->ctx, 'Ext_ReadAttributeBoolean')) {
+            $v = @$this->ctx->Ext_ReadAttributeBoolean($ident);
+            return is_bool($v) ? $v : (bool)$v;
+        }
+        $v = @$this->ctx->ReadAttributeBoolean($ident);
+        return is_bool($v) ? $v : (bool)$v;
+    }
+
+    /** Safe write of an attribute string. */
+    private function CtxWriteAttrString(string $ident, string $value): void
+    {
+        if (method_exists($this->ctx, 'Ext_WriteAttributeString')) {
+            @$this->ctx->Ext_WriteAttributeString($ident, $value);
+            return;
+        }
+        @$this->ctx->WriteAttributeString($ident, $value);
+    }
+
+    /** Safe write of an attribute bool. */
+    private function CtxWriteAttrBool(string $ident, bool $value): void
+    {
+        if (method_exists($this->ctx, 'Ext_WriteAttributeBoolean')) {
+            @$this->ctx->Ext_WriteAttributeBoolean($ident, $value);
+            return;
+        }
+        @$this->ctx->WriteAttributeBoolean($ident, $value);
+    }
+
+    /** Safe read of a property string. */
+    private function CtxReadPropString(string $ident): string
+    {
+        if (method_exists($this->ctx, 'Ext_ReadPropertyString')) {
+            $v = @$this->ctx->Ext_ReadPropertyString($ident);
+            return is_string($v) ? $v : '';
+        }
+        $v = @$this->ctx->ReadPropertyString($ident);
+        return is_string($v) ? $v : '';
+    }
+
+    /**
      * Decide CURLOPT_IPRESOLVE for the given host.
      *
      * - If host is a literal IPv4 address, force IPv4.
@@ -68,21 +123,17 @@ class UcrApiHelper
         }
 
         // Prefer IPv4 if available
-        if (method_exists($this->ctx, 'Ext_ReadAttributeString')) {
-            $ipv4 = (string)$this->ctx->Ext_ReadAttributeString('remote_host_ipv4');
-            $ipv4 = trim($ipv4);
-            if ($ipv4 !== '') {
-                $this->dbg(__FUNCTION__, '🧠 REST host pick: prefer IPv4 over link-local IPv6: ' . $ipv4 . ' (was ' . $rawHost . ')', 0, 'API', 0);
-                return $ipv4;
-            }
+        $ipv4 = trim($this->CtxReadAttrString('remote_host_ipv4'));
+        if ($ipv4 !== '') {
+            $this->dbg(__FUNCTION__, '🧠 REST host pick: prefer IPv4 over link-local IPv6: ' . $ipv4 . ' (was ' . $rawHost . ')', 0, 'API', 0);
+            return $ipv4;
+        }
 
-            // Prefer hostname if available
-            $name = (string)$this->ctx->Ext_ReadAttributeString('remote_host_name');
-            $name = trim($name);
-            if ($name !== '') {
-                $this->dbg(__FUNCTION__, '🧠 REST host pick: prefer hostname over link-local IPv6: ' . $name . ' (was ' . $rawHost . ')', 0, 'API', 0);
-                return $name;
-            }
+        // Prefer hostname if available
+        $name = trim($this->CtxReadAttrString('remote_host_name'));
+        if ($name !== '') {
+            $this->dbg(__FUNCTION__, '🧠 REST host pick: prefer hostname over link-local IPv6: ' . $name . ' (was ' . $rawHost . ')', 0, 'API', 0);
+            return $name;
         }
 
         // No better alternative known
@@ -282,10 +333,10 @@ class UcrApiHelper
         $this->dbg(__FUNCTION__, 'started' . ($forceRenew ? ' (forceRenew=true)' : ''), 0, 'API', 0);
 
         // --- read config ---
-        $hostRaw = $this->ctx->Ext_ReadAttributeString('remote_host');
+        $hostRaw = $this->CtxReadAttrString('remote_host');
         $host = $this->PickRestHost($hostRaw);
-        $user = $this->ctx->Ext_ReadPropertyString('web_config_user');
-        $pass = $this->ctx->Ext_ReadAttributeString('web_config_pass');
+        $user = $this->CtxReadPropString('web_config_user');
+        $pass = $this->CtxReadAttrString('web_config_pass');
 
         if ($host === '' || $user === '' || $pass === '') {
             $this->dbg(__FUNCTION__, '❌ Fehlende Konfiguration (host/user/pass).', 0, 'API', 0);
@@ -304,16 +355,16 @@ class UcrApiHelper
         }
 
         // Ensure api_key_name exists
-        if ($this->ctx->Ext_ReadAttributeString('api_key_name') === '') {
-            $uuid = $this->ctx->Ext_ReadAttributeString('symcon_uuid');
+        if ($this->CtxReadAttrString('api_key_name') === '') {
+            $uuid = $this->CtxReadAttrString('symcon_uuid');
             if ($uuid === '') {
                 $uuid = bin2hex(random_bytes(8));
-                $this->ctx->Ext_WriteAttributeString('symcon_uuid', $uuid);
+                $this->CtxWriteAttrString('symcon_uuid', $uuid);
             }
-            $this->ctx->Ext_WriteAttributeString('api_key_name', 'Symcon Access ' . $uuid);
+            $this->CtxWriteAttrString('api_key_name', 'Symcon Access ' . $uuid);
         }
 
-        $name = $this->ctx->Ext_ReadAttributeString('api_key_name');
+        $name = $this->CtxReadAttrString('api_key_name');
         if ($name === '') {
             $this->dbg(__FUNCTION__, '❌ Fehler: api_key_name leer.', 0, 'API', 0);
             return false;
@@ -380,7 +431,7 @@ class UcrApiHelper
         };
 
         // --- Step 1: Validate stored API key by doing a Bearer request ---
-        $storedApiKey = $this->ctx->Ext_ReadAttributeString('api_key');
+        $storedApiKey = $this->CtxReadAttrString('api_key');
         if (!$forceRenew && $storedApiKey !== '') {
             $this->dbg(__FUNCTION__, '🔐 Prüfe gespeicherten API-Key via /api/system ...', 0, 'API', 0);
             $test = $httpRequest(
@@ -453,7 +504,7 @@ class UcrApiHelper
         if ($forceRenew || $storedApiKey === '') {
             // Clear local key first
             if ($storedApiKey !== '') {
-                $this->ctx->Ext_WriteAttributeString('api_key', '');
+                $this->CtxWriteAttrString('api_key', '');
                 $storedApiKey = '';
             }
 
@@ -475,13 +526,13 @@ class UcrApiHelper
                 // if revoke fails, still try to create a new key with a new name as fallback
                 if ($del['httpCode'] < 200 || $del['httpCode'] >= 300) {
                     $this->dbg(__FUNCTION__, '⚠️ Revoke nicht erfolgreich. Fallback: neuer Key-Name wird generiert.', 0, 'API', 0);
-                    $uuid = $this->ctx->Ext_ReadAttributeString('symcon_uuid');
+                    $uuid = $this->CtxReadAttrString('symcon_uuid');
                     if ($uuid === '') {
                         $uuid = bin2hex(random_bytes(8));
-                        $this->ctx->Ext_WriteAttributeString('symcon_uuid', $uuid);
+                        $this->CtxWriteAttrString('symcon_uuid', $uuid);
                     }
                     $newName = 'Symcon Access ' . $uuid . ' ' . date('YmdHis');
-                    $this->ctx->Ext_WriteAttributeString('api_key_name', $newName);
+                    $this->CtxWriteAttrString('api_key_name', $newName);
                     $name = $newName;
                     $foundKeyId = null;
                 }
@@ -507,13 +558,13 @@ class UcrApiHelper
                 }
                 if ($del['httpCode'] < 200 || $del['httpCode'] >= 300) {
                     $this->dbg(__FUNCTION__, '⚠️ Revoke nicht erfolgreich. Fallback: neuer Key-Name wird generiert.', 0, 'API', 0);
-                    $uuid = $this->ctx->Ext_ReadAttributeString('symcon_uuid');
+                    $uuid = $this->CtxReadAttrString('symcon_uuid');
                     if ($uuid === '') {
                         $uuid = bin2hex(random_bytes(8));
-                        $this->ctx->Ext_WriteAttributeString('symcon_uuid', $uuid);
+                        $this->CtxWriteAttrString('symcon_uuid', $uuid);
                     }
                     $newName = 'Symcon Access ' . $uuid . ' ' . date('YmdHis');
-                    $this->ctx->Ext_WriteAttributeString('api_key_name', $newName);
+                    $this->CtxWriteAttrString('api_key_name', $newName);
                     $name = $newName;
                 }
             }
@@ -547,16 +598,16 @@ class UcrApiHelper
         $data = json_decode($create['response'], true);
         if (is_array($data) && isset($data['api_key']) && $data['api_key'] !== '') {
             $newKey = (string)$data['api_key'];
-            $this->ctx->Ext_WriteAttributeString('api_key', $newKey);
+            $this->CtxWriteAttrString('api_key', $newKey);
             $this->dbg(__FUNCTION__, '✅ API-Key gespeichert.', 0, 'API', 0);
 
             // Auto-upload icon once after obtaining an API key
-            if (!$this->ctx->Ext_ReadAttributeBoolean('icon_uploaded')) {
+            if (!$this->CtxReadAttrBool('icon_uploaded')) {
                 $this->dbg(__FUNCTION__, '🖼️ Auto-uploading Symcon icon...', 0, 'API', 0);
                 $uploadResult = $this->UploadSymconIcon();
                 $decodedUpload = json_decode($uploadResult, true);
                 if (is_array($decodedUpload) && ($decodedUpload['success'] ?? false) === true) {
-                    $this->ctx->Ext_WriteAttributeBoolean('icon_uploaded', true);
+                    $this->CtxWriteAttrBool('icon_uploaded', true);
                     $this->dbg(__FUNCTION__, '✅ Symcon icon uploaded.', 0, 'API', 0);
                 } else {
                     $this->dbg(__FUNCTION__, '⚠️ Symcon icon upload failed: ' . $uploadResult, 0, 'API', 0);
@@ -583,7 +634,7 @@ class UcrApiHelper
     {
         $remoteHost = trim($remoteHost);
         if ($remoteHost === '') {
-            $remoteHost = trim((string)$this->ctx->Ext_ReadAttributeString('remote_host'));
+            $remoteHost = trim($this->CtxReadAttrString('remote_host'));
         }
 
         if ($remoteHost === '') {
@@ -592,16 +643,16 @@ class UcrApiHelper
         }
 
         // PIN is stored as attribute (web_config_pass)
-        $storedPin = trim((string)$this->ctx->Ext_ReadAttributeString('web_config_pass'));
+        $storedPin = trim($this->CtxReadAttrString('web_config_pass'));
 
         // Keep host consistent for subsequent calls (including GetApiKey/EnsureApiKey)
-        $this->ctx->Ext_WriteAttributeString('remote_host', $remoteHost);
+        $this->CtxWriteAttrString('remote_host', $remoteHost);
 
         // Try to obtain a valid API key (this will validate/renew/create if possible)
         $this->dbg(__FUNCTION__, '🔎 EnsureRemoteApiAccess → trying EnsureApiKey for host ' . $remoteHost, 0, 'SETUP', 0);
 
         $ok = $this->EnsureApiKey(false);
-        $apiKey = trim((string)$this->ctx->Ext_ReadAttributeString('api_key'));
+        $apiKey = trim($this->CtxReadAttrString('api_key'));
 
         if ($ok && $apiKey !== '') {
             $this->dbg(__FUNCTION__, '✅ Remote API access OK (api_key_ok)', 0, 'SETUP', 0);
@@ -625,8 +676,8 @@ class UcrApiHelper
     {
         $this->dbg(__FUNCTION__, 'started', 0, 'API', 0);
 
-        $host = $this->ctx->Ext_ReadAttributeString('remote_host');
-        $pass = $this->ctx->Ext_ReadAttributeString('web_config_pass');
+        $host = $this->CtxReadAttrString('remote_host');
+        $pass = $this->CtxReadAttrString('web_config_pass');
 
         // Only attempt to create/validate an API key once the required fields are present.
         if ($host !== '' && $pass !== '') {
@@ -635,7 +686,7 @@ class UcrApiHelper
             $this->dbg(__FUNCTION__, '⏸️ Skip EnsureApiKey (Host/Password missing).', 0, 'API', 0);
         }
 
-        $apiKey = $this->ctx->Ext_ReadAttributeString('api_key');
+        $apiKey = $this->CtxReadAttrString('api_key');
         $this->dbg('API Key', $apiKey, 0, 'API', 0);
         return $apiKey;
     }
@@ -648,8 +699,8 @@ class UcrApiHelper
     {
         $this->dbg(__FUNCTION__, '🔄 Reset API-Key gestartet', 0, 'API', 0);
         // Clear local token first
-        $this->ctx->Ext_WriteAttributeString('api_key', '');
-        $this->ctx->Ext_WriteAttributeBoolean('icon_uploaded', false);
+        $this->CtxWriteAttrString('api_key', '');
+        $this->CtxWriteAttrBool('icon_uploaded', false);
 
         // Force renew (revoke + create)
         $ok = $this->EnsureApiKey(true);
@@ -669,7 +720,7 @@ class UcrApiHelper
     {
         $this->dbg(__FUNCTION__, 'started', 0, 'API', 0);
 
-        $hostRaw = $this->ctx->Ext_ReadAttributeString('remote_host');
+        $hostRaw = $this->CtxReadAttrString('remote_host');
         $host = $this->PickRestHost($hostRaw);
         if ($hostRaw === '') {
             $msg = 'Host is missing.';
@@ -698,7 +749,7 @@ class UcrApiHelper
             return json_encode(['success' => false, 'message' => $msg]);
         }
 
-        $apiKey = $this->ctx->Ext_ReadAttributeString('api_key');
+        $apiKey = $this->CtxReadAttrString('api_key');
         if ($apiKey === '') {
             $msg = 'API key is empty.';
             $this->dbg(__FUNCTION__, '❌ ' . $msg, 0, 'API', 0);
@@ -732,17 +783,6 @@ class UcrApiHelper
 
         $this->dbg(__FUNCTION__, '✅ Icon resolved path: ' . $filePath, 0, 'API', 0);
 
-        // Project structure: this helper lives in /libs, icon is in /imgs at module root.
-        /*
-         *
-        $filePath = dirname(__DIR__) . '/imgs/symcon_icon.png';
-        $this->dbg(__FUNCTION__, 'Icon path: ' . $filePath, 0, 'API', 0);
-        if (!file_exists($filePath)) {
-            $msg = 'Icon file not found: ' . $filePath;
-            $this->dbg(__FUNCTION__, '❌ ' . $msg, 0, 'API', 0);
-            return json_encode(['success' => false, 'message' => $msg]);
-        }
-        */
 
         $url = $baseUrl . '/api/resources/Icon';
         $this->dbg(__FUNCTION__, 'POST ' . $url, 0, 'API', 0);

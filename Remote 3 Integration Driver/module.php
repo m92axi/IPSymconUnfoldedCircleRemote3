@@ -75,6 +75,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         //Never delete this line!
         parent::Create();
 
+        $this->RegisterPropertyString('host', '');
         $this->RegisterAttributeString('api_key', '');
         $this->RegisterAttributeString('api_key_name', '');
         $this->RegisterAttributeString('auth_mode', '');
@@ -85,6 +86,11 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $this->RegisterPropertyString('host', '');
         $this->RegisterAttributeString('web_config_pass', '');
         $this->RegisterAttributeString('remote_host', '');
+
+        // store IPv4/IPv6 fallback addresses
+        $this->RegisterAttributeString('remote_host_ipv4', '');
+        $this->RegisterAttributeString('remote_host_ipv6', '');
+        $this->RegisterAttributeString('remote_host_name', '');
 
         $this->RegisterAttributeString('token', '');
 
