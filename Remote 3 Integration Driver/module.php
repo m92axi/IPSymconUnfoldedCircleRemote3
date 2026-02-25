@@ -1048,7 +1048,6 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_WS, '📥 Original JSON string: ' . $JSONString, 0);
             return '';
         }
-        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_WS, '📥 Incoming (decoded): ' . json_encode($data), 0) ;
 
         $clientIP = (string)($data['ClientIP'] ?? $data['ClientIp'] ?? '');
         $clientPort = (int)($data['ClientPort'] ?? $data['ClientPORT'] ?? 0);
