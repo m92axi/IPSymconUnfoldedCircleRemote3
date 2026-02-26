@@ -3088,7 +3088,8 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
         $entries = json_decode(IPS_GetProperty($mdnsID, 'Services'), true) ?? [];
 
-        $serviceName = 'Symcon';
+        // mDNS instance name must be the unique driver_id (required by UC discovery)
+        $serviceName = (string)$this->GetDriverId();
         $serviceType = '_uc-integration._tcp';
         $servicePort = self::DEFAULT_WS_PORT;
 
@@ -3110,6 +3111,22 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
         $first = $this->GetSymconFirstName();
 
+        // Prefer Symcon network info (Sys_GetNetworkInfo) to obtain a stable IPv4 address.
+        // This avoids hostname resolution issues in many Symcon setups.
+        $ipv4 = trim((string)$this->GetHostIP());
+        if ($ipv4 !== '' && !filter_var($ipv4, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_EXT, '⚠️ GetHostIP returned non-IPv4 value: ' . $ipv4, 0);
+            $ipv4 = '';
+        }
+        // Avoid loopback
+        if ($ipv4 !== '' && strpos($ipv4, '127.') === 0) {
+            $ipv4 = '';
+        }
+
+        // NOTE: Most drivers use root path `/`. If you later introduce a dedicated endpoint, change this.
+        $wsPath = '/';
+        $wsUrl = ($ipv4 !== '') ? ('ws://' . $ipv4 . ':' . $servicePort . $wsPath) : '';
+
         $newEntry = [
             'Name' => $serviceName,
             'RegType' => $serviceType,
@@ -3120,10 +3137,19 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 // Keep TXT minimal and stable. User can still edit it in the DNS-SD instance UI if desired.
                 ['Value' => 'name=Symcon von ' . $first],
                 ['Value' => 'ver=' . $this->GetModuleLibraryVersion()],
+                ['Value' => 'ver_api=' . self::Unfolded_Circle_API_Version],
                 ['Value' => 'developer=Fonzo'],
-                ['Value' => 'pwd=true']
+                ['Value' => 'pwd=true'],
+                // Help the Remote select IPv4 by overriding the full websocket url.
+                // If we couldn't determine a stable IPv4, we omit ws_url and fall back to host/port discovery.
+                // ws_path is included for completeness.
+                ['Value' => 'ws_path=' . $wsPath],
             ]
         ];
+
+        if ($wsUrl !== '') {
+            $newEntry['TXTRecords'][] = ['Value' => 'ws_url=' . $wsUrl];
+        }
 
         $entries[] = $newEntry;
 
@@ -5482,8 +5508,18 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             }
         }
 
-        // Sensor type detection (profile name and unit)
+        // Sensor type detection (profile name + unit)
+        // NOTE: Some Symcon profiles like ~Intensity.* also use '%' as suffix.
+        // Those must NOT be mapped to 'humidity'. If Remote 3 has no matching type, we use 'generic'.
         $type = 'generic';
+
+        $isIntensityLike = (
+            strpos($profileLower, 'intensity') !== false ||
+            strpos($profileLower, 'brightness') !== false ||
+            strpos($profileLower, 'dimmer') !== false ||
+            strpos($profileLower, '~intensity') !== false ||
+            strpos($profileLower, '~brightness') !== false
+        );
 
         // temperature
         if (
@@ -5491,18 +5527,9 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             strpos($profileLower, 'temperature') !== false ||
             strpos($profileLower, 'celsius') !== false ||
             strpos($profileLower, '°c') !== false ||
-            stripos($unit, '°c') !== false ||
-            stripos($unit, 'c') === 0
+            stripos($unit, '°c') !== false
         ) {
             $type = 'temperature';
-        } // humidity
-        elseif (
-            strpos($profileLower, 'humid') !== false ||
-            strpos($profileLower, 'humidity') !== false ||
-            strpos($profileLower, '~humidity') !== false ||
-            trim($unit) === '%'
-        ) {
-            $type = 'humidity';
         } // illuminance
         elseif (
             strpos($profileLower, 'lux') !== false ||
@@ -5515,9 +5542,22 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         elseif (
             strpos($profileLower, 'volt') !== false ||
             strpos($profileLower, '~volt') !== false ||
-            stripos($unit, 'v') !== false
+            preg_match('/\bv\b/i', $unit) === 1
         ) {
             $type = 'voltage';
+        } // humidity (ONLY if not intensity/brightness)
+        elseif (
+            !$isIntensityLike && (
+                strpos($profileLower, 'humid') !== false ||
+                strpos($profileLower, 'humidity') !== false ||
+                strpos($profileLower, '~humidity') !== false ||
+                trim($unit) === '%'
+            )
+        ) {
+            $type = 'humidity';
+        } // intensity/brightness is not a Remote 3 sensor type -> generic
+        elseif ($isIntensityLike) {
+            $type = 'generic';
         }
 
         $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, "✅ Ermittelter Typ für Profil '$profileLower' (unit='$unit'): $type", 0);
@@ -5530,6 +5570,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             $type = 'generic';
             $unit = '';
         }
+        $type = $this->NormalizeRemoteSensorType($type);
 
         // Always write the resulting values into the editor fields
         $this->UpdateFormField('sensor_type', 'value', $type);
@@ -5543,7 +5584,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         // Unit: editable ONLY when we are in the "no profile" case (forced generic).
         // If a profile exists, unit is derived from Symcon suffix and must not be edited.
         $unitEditable = (!$hasProfile);
-        $this->UpdateFormField('unit', 'visible', $unitEditable);
+        $this->UpdateFormField('unit', 'visible', true);
         $this->UpdateFormField('unit', 'enabled', $unitEditable);
     }
 
@@ -7105,15 +7146,11 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                         continue;
                     }
 
-                    $unit = trim((string)($s['unit'] ?? ''));
-                    if ($unit === '') {
-                        $unit = $this->GuessUnitForVariable($varId);
-                    }
+                    // Unit comes from Symcon variable profile suffix/prefix (if any)
+                    $unit = $this->GuessUnitForVariable($varId);
 
-                    $sensorType = trim((string)($s['sensor_type'] ?? 'custom'));
-                    if ($sensorType === '') {
-                        $sensorType = 'custom';
-                    }
+                    // Derive a Remote 3 compatible sensor type; unknown => generic
+                    $sensorType = $this->DeriveRemoteSensorTypeForVariable($varId, $unit);
 
                     $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_DISCOVERY,
                         "🧪 Sensor candidate: iid=$iid varId=$varId type=$sensorType unit=$unit", 0);
@@ -7124,7 +7161,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                     }
 
                     $existingSensors[] = [
-                        'name' => (string)@IPS_GetName($varId),
+                        'name' => trim((($this->GetObjectPath($iid) !== '' ? ($this->GetObjectPath($iid) . ' → ') : '') . (string)@IPS_GetName($iid) . ' → ' . (string)@IPS_GetName($varId))),
                         'instance_id' => $iid,
                         'var_id' => (int)$varId,
                         'unit' => (string)$unit,
@@ -7231,6 +7268,68 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $prefix = trim((string)($p['Prefix'] ?? ''));
 
         return $suffix !== '' ? $suffix : ($prefix !== '' ? $prefix : '');
+    }
+
+    private function NormalizeRemoteSensorType(string $type): string
+    {
+        $type = strtolower(trim($type));
+        $allowed = ['temperature', 'humidity', 'illuminance', 'voltage', 'generic'];
+        return in_array($type, $allowed, true) ? $type : 'generic';
+    }
+
+    private function DeriveRemoteSensorTypeForVariable(int $varId, string $unit = ''): string
+    {
+        $unit = trim($unit);
+
+        // Prefer profile name heuristics (robust across different suffixes)
+        $profile = '';
+        $v = @IPS_GetVariable($varId);
+        if (is_array($v)) {
+            $profile = trim((string)($v['VariableCustomProfile'] ?? ''));
+            if ($profile === '') {
+                $profile = trim((string)($v['VariableProfile'] ?? ''));
+            }
+        }
+        $p = strtolower($profile);
+
+        $type = 'generic';
+
+        if ($p !== '') {
+            if (strpos($p, 'temperature') !== false || strpos($p, 'temp') !== false || strpos($p, 'celsius') !== false) {
+                $type = 'temperature';
+            } elseif (strpos($p, 'humidity') !== false || strpos($p, 'feuchtigkeit') !== false) {
+                $type = 'humidity';
+            } elseif (
+                strpos($p, 'illumin') !== false ||
+                strpos($p, 'lux') !== false ||
+                strpos($p, 'beleucht') !== false ||
+                strpos($p, 'intensity') !== false ||
+                strpos($p, 'brightness') !== false ||
+                strpos($p, 'helligkeit') !== false ||
+                strpos($p, 'dimmer') !== false ||
+                strpos($p, 'level') !== false
+            ) {
+                $type = 'illuminance';
+            } elseif (strpos($p, 'voltage') !== false || strpos($p, 'volt') !== false) {
+                $type = 'voltage';
+            }
+        }
+
+        // If still generic, try unit heuristics (strict)
+        if ($type === 'generic' && $unit !== '') {
+            $u = strtolower($unit);
+            if ($u === '°c' || $u === 'c' || strpos($u, 'celsius') !== false) {
+                $type = 'temperature';
+            } elseif (strpos($u, 'rh') !== false || strpos($u, '%rh') !== false) {
+                $type = 'humidity';
+            } elseif ($u === 'lx' || strpos($u, 'lux') !== false) {
+                $type = 'illuminance';
+            } elseif ($u === 'v' || strpos($u, 'volt') !== false) {
+                $type = 'voltage';
+            }
+        }
+
+        return $this->NormalizeRemoteSensorType($type);
     }
 
     /**

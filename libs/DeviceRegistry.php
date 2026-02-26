@@ -972,6 +972,12 @@ class DeviceRegistry
                 'attributes' => [
                     Entity_Cover::ATTR_POSITION    => 'LEVEL',
                     Entity_Cover::ATTR_STATE   => 'LEVEL'
+                ],
+                // Generic matching rules so we can differentiate multiple device types on the same GUID
+                'match' => [
+                    'required_child_idents' => [
+                        'LEVEL'
+                    ]
                 ]
             ],
             [
