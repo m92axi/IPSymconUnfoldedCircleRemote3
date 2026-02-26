@@ -6513,6 +6513,59 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         );
     }
 
+    public function StorePopupSensorSelection(string $register, string $instanceId, string $varId): void
+    {
+        $reg = in_array(strtolower(trim($register)), ['1', 'true', 'yes', 'on'], true);
+        $iid = (int)trim($instanceId);
+        $vid = (int)trim($varId);
+
+        if ($vid <= 0) {
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                "⚠️ StorePopupSensorSelection: invalid varId='$varId'", 0);
+            return;
+        }
+
+        // Read current attribute content (JSON array)
+        $listName = 'popup_sensor_suggestions';
+        $raw = trim((string)$this->ReadAttributeString($listName));
+        $rows = [];
+        if ($raw !== '') {
+            $decoded = json_decode($raw, true);
+            if (is_array($decoded)) {
+                $rows = $decoded;
+            }
+        }
+
+        // Update/insert row by var_id
+        $updated = false;
+        foreach ($rows as &$row) {
+            if (!is_array($row)) continue;
+            if ((int)($row['var_id'] ?? 0) === $vid) {
+                $row['register'] = $reg;
+                $row['var_id'] = $vid;
+                $row['instance_id'] = $iid; // keep it even if 0, but normally >0
+                $updated = true;
+                break;
+            }
+        }
+        unset($row);
+
+        if (!$updated) {
+            $rows[] = [
+                'register' => $reg,
+                'var_id' => $vid,
+                'instance_id' => $iid
+            ];
+        }
+
+        $this->WriteAttributeString($listName, json_encode($rows, JSON_UNESCAPED_SLASHES));
+
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+            "💾 Stored sensor selection (var_id=$vid instance_id=$iid register=" . ($reg ? 'true' : 'false') . ")",
+            0
+        );
+    }
+
     /**
      * Applies cached register-state from an attribute to freshly built popup rows.
      *
@@ -7034,7 +7087,21 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 foreach ($sensorSelected as $s) {
                     $iid = (int)($s['instance_id'] ?? 0);
                     $varId = (int)($s['var_id'] ?? 0);
-                    if ($iid <= 0 || !IPS_InstanceExists($iid) || $varId <= 0 || !IPS_VariableExists($varId)) {
+
+                    if ($varId <= 0 || !@IPS_VariableExists($varId)) {
+                        $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                            '⚠️ Skipping sensor row: invalid/missing var_id', 0);
+                        continue;
+                    }
+
+                    // Popup cache may only store {register,var_id}. Derive instance_id from variable parent if missing.
+                    if ($iid <= 0) {
+                        $iid = (int)@IPS_GetParent($varId);
+                    }
+
+                    if ($iid <= 0 || !@IPS_InstanceExists($iid)) {
+                        $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                            "⚠️ Skipping sensor varId=$varId: could not resolve valid instance_id (parent=$iid)", 0);
                         continue;
                     }
 
@@ -7047,6 +7114,9 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                     if ($sensorType === '') {
                         $sensorType = 'custom';
                     }
+
+                    $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_DISCOVERY,
+                        "🧪 Sensor candidate: iid=$iid varId=$varId type=$sensorType unit=$unit", 0);
 
                     $key = $iid . ':' . (int)$varId;
                     if (isset($existingKeys[$key])) {
@@ -7450,7 +7520,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                             'add' => false,
                             'delete' => false,
                             'rowCount' => 8,
-                            'onEdit' => 'UCR_StorePopupList($id, "popup_sensor_suggestions", (string)$popup_sensor_suggestions["register"], "var_id", (string)$popup_sensor_suggestions["var_id"]);'
+                            'onEdit' => 'UCR_StorePopupSensorSelection($id, (string)$popup_sensor_suggestions["register"], (string)$popup_sensor_suggestions["instance_id"], (string)$popup_sensor_suggestions["var_id"]);'
                         ],
                         [
                             'type' => 'List',
