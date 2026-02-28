@@ -36,6 +36,10 @@ class Remote3IntegrationDriver extends IPSModuleStrict
     const Unfolded_Circle_API_Version = "0.12.1";
 
     const Unfolded_Circle_API_Minimum_Version = "0.12.1";
+    const DEVICE_STATE_CONNECTED = "CONNECTED";
+    const DEVICE_STATE_CONNECTING = "CONNECTING";
+    const DEVICE_STATE_DISCONNECTED = "DISCONNECTED";
+    const DEVICE_STATE_ERROR = "ERROR";
 
     private ?UcrApiHelper $apiHelper = null;
 
@@ -670,7 +674,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
             if (($isAuthenticated || $isWhitelisted) && $hasPort) {
                 $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_DEVICE, "🔁 Sending device_state ping to $ip:{$entry['port']} (auth: " . ($isAuthenticated ? '✅' : '❌') . ", whitelist: " . ($isWhitelisted ? '✅' : '❌') . ")", 0);
-                $this->SendDeviceState('CONNECTED', $ip, (int)$entry['port']);
+                $this->SendDeviceState(self::DEVICE_STATE_CONNECTED, $ip, (int)$entry['port']);
             } else {
                 $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_DEVICE, "⏭️ Ping skipped for $ip (auth: " . ($isAuthenticated ? '✅' : '❌') . ", whitelist: " . ($isWhitelisted ? '✅' : '❌') . ", port: " . ($entry['port'] ?? '—') . ")", 0);
             }
@@ -939,29 +943,73 @@ class Remote3IntegrationDriver extends IPSModuleStrict
      */
     private function GetSensorValueAndUnit(int $varId): array
     {
+        // Default raw value
         $value = @GetValue($varId);
         $unit = '';
+
         $varInfo = @IPS_GetVariable($varId);
-        $profile = $varInfo['VariableCustomProfile'] ?? $varInfo['VariableProfile'] ?? '';
-
-        if ($profile && @IPS_VariableProfileExists($profile)) {
-            $profileInfo = IPS_GetVariableProfile($profile);
-            $unit = trim($profileInfo['Suffix'] ?? '');
-
-            // Bekannte Profile, bei denen Werte von z.B. 0.55 in 55 umgerechnet werden sollen
-            $normalizeProfiles = [
-                '~Intensity.1'
-            ];
-
-            if (in_array($profile, $normalizeProfiles)) {
-                $value = round($value * 100, $profileInfo['Digits']);
-            } // Alternative generische Prüfung: Suffix ist %, Wert ist < 1, und Profil verwendet Dezimalstellen
-            elseif (in_array($unit, ['%', ' %', '% ']) && $profileInfo['Digits'] > 0 && $value < 1) {
-                $value = round($value * 100, $profileInfo['Digits']);
+        $profile = '';
+        if (is_array($varInfo)) {
+            $profile = trim((string)($varInfo['VariableCustomProfile'] ?? ''));
+            if ($profile === '') {
+                $profile = trim((string)($varInfo['VariableProfile'] ?? ''));
             }
         }
 
+        // If Symcon has a profile (or any formatted representation via a profile), prefer the formatted value.
+        // This keeps formatting control (digits, decimal separator, rounding, etc.) in Symcon.
+        if ($profile !== '' && @IPS_VariableProfileExists($profile)) {
+            $profileInfo = IPS_GetVariableProfile($profile);
+            $unit = trim((string)($profileInfo['Suffix'] ?? ''));
+
+            $formatted = (string)@GetValueFormatted($varId);
+
+            // GetValueFormatted() typically contains the suffix already. Keep unit separate for Remote 3:
+            // strip the profile suffix from the formatted string if it is present.
+            $value = $this->StripProfileSuffixFromFormattedValue($formatted, $unit);
+
+            return ['value' => $value, 'unit' => $unit];
+        }
+
         return ['value' => $value, 'unit' => $unit];
+    }
+
+    /**
+     * Strip a profile suffix (unit) from the formatted value returned by GetValueFormatted().
+     * This keeps the value formatting (digits, decimal separator) but avoids duplicating the unit,
+     * because Remote 3 gets the unit separately.
+     */
+    private function StripProfileSuffixFromFormattedValue(string $formatted, string $unit): string
+    {
+        $formatted = trim($formatted);
+        $unit = (string)$unit;
+
+        if ($formatted === '' || trim($unit) === '') {
+            return $formatted;
+        }
+
+        // Try exact match at the end (with and without a space).
+        $uTrim = trim($unit);
+
+        // Normalize NBSP (some frontends use it between value and suffix)
+        $f = str_replace("\xC2\xA0", ' ', $formatted);
+
+        // Case 1: ends with unit as-is
+        if (str_ends_with($f, $unit)) {
+            return trim(substr($f, 0, -strlen($unit)));
+        }
+
+        // Case 2: ends with trimmed unit
+        if (str_ends_with($f, $uTrim)) {
+            return trim(substr($f, 0, -strlen($uTrim)));
+        }
+
+        // Case 3: ends with space + trimmed unit
+        if (str_ends_with($f, ' ' . $uTrim)) {
+            return trim(substr($f, 0, -strlen(' ' . $uTrim)));
+        }
+
+        return $formatted;
     }
 
     private function Send(string $Text): void
@@ -1275,7 +1323,35 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
             case 'connect':
                 $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_WS, '🔌 Connect received – sending device_state CONNECTED', 0);
-                $this->SendDeviceState('CONNECTED', $clientIP, $clientPort);
+                $this->SendDeviceState(self::DEVICE_STATE_CONNECTED, $clientIP, $clientPort);
+                break;
+
+            case 'get_device_state':
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DEVICE, '📡 get_device_state received → sending device_state', 0);
+
+                // Use ClientSessionTrait helpers for session/auth/whitelist detection
+                $sessions = $this->getAllClientSessions();
+
+                $whitelistRaw = json_decode($this->ReadPropertyString('ip_whitelist'), true);
+                $whitelist = is_array($whitelistRaw) ? array_map('trim', array_column($whitelistRaw, 'ip')) : [];
+                $isWhitelisted = in_array($clientIP, $whitelist, true);
+
+                $isAuthenticated = $this->isClientAuthenticated($clientIP);
+                $hasSessionPort = !empty($sessions[$clientIP]['port']);
+
+                // UC allowed states: CONNECTED, CONNECTING, DISCONNECTED, ERROR
+                if (($isAuthenticated || $isWhitelisted) && $hasSessionPort) {
+                    $state = 'CONNECTED';
+                } else {
+                    // We are talking to a client, but not yet authenticated/whitelisted.
+                    $state = 'CONNECTING';
+                }
+                $this->SendDeviceState($state, $clientIP, $clientPort);
+
+                // optional: some clients like an OK response too (harmless)
+                if (($kind ?? '') === 'req' && ($reqId ?? 0) > 0) {
+                    $this->SendResultOK($reqId, $clientIP, $clientPort);
+                }
                 break;
 
             case 'entity_command':
@@ -1379,7 +1455,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
             case 'connect':
                 $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_ENTITY, "🔌 Remote $ip ist wieder aktiv → sende CONNECTED", 0);
-                $this->SendDeviceState('CONNECTED', $ip, $port);
+                $this->SendDeviceState(self::DEVICE_STATE_CONNECTED, $ip, $port);
                 $this->UpdateAllEntityStates();
                 if ($instanceID > 0) {
                     UCR_ReceiveDriverEvent($instanceID, $json);
@@ -1661,6 +1737,12 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 ],
                 'icon' => 'custom:symcon_icon.png',
                 'description' => $descriptions,
+                'features' => [
+                    [
+                        'name' => 'auth.external_tokens',
+                        'required' => true
+                    ]
+                ],
                 'port' => 9988,
                 'developer' => [
                     'name' => 'Fonzo',
@@ -3051,7 +3133,8 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
         $entries = json_decode(IPS_GetProperty($mdnsID, 'Services'), true) ?? [];
 
-        $serviceName = 'Symcon';
+        // mDNS instance name must be the unique driver_id (required by UC discovery)
+        $serviceName = (string)$this->GetDriverId();
         $serviceType = '_uc-integration._tcp';
         $servicePort = self::DEFAULT_WS_PORT;
 
@@ -3073,6 +3156,22 @@ class Remote3IntegrationDriver extends IPSModuleStrict
 
         $first = $this->GetSymconFirstName();
 
+        // Prefer Symcon network info (Sys_GetNetworkInfo) to obtain a stable IPv4 address.
+        // This avoids hostname resolution issues in many Symcon setups.
+        $ipv4 = trim((string)$this->GetHostIP());
+        if ($ipv4 !== '' && !filter_var($ipv4, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_EXT, '⚠️ GetHostIP returned non-IPv4 value: ' . $ipv4, 0);
+            $ipv4 = '';
+        }
+        // Avoid loopback
+        if ($ipv4 !== '' && strpos($ipv4, '127.') === 0) {
+            $ipv4 = '';
+        }
+
+        // NOTE: Most drivers use root path `/`. If you later introduce a dedicated endpoint, change this.
+        $wsPath = '/';
+        $wsUrl = ($ipv4 !== '') ? ('ws://' . $ipv4 . ':' . $servicePort . $wsPath) : '';
+
         $newEntry = [
             'Name' => $serviceName,
             'RegType' => $serviceType,
@@ -3083,10 +3182,19 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 // Keep TXT minimal and stable. User can still edit it in the DNS-SD instance UI if desired.
                 ['Value' => 'name=Symcon von ' . $first],
                 ['Value' => 'ver=' . $this->GetModuleLibraryVersion()],
+                ['Value' => 'ver_api=' . self::Unfolded_Circle_API_Version],
                 ['Value' => 'developer=Fonzo'],
-                ['Value' => 'pwd=true']
+                ['Value' => 'pwd=true'],
+                // Help the Remote select IPv4 by overriding the full websocket url.
+                // If we couldn't determine a stable IPv4, we omit ws_url and fall back to host/port discovery.
+                // ws_path is included for completeness.
+                ['Value' => 'ws_path=' . $wsPath],
             ]
         ];
+
+        if ($wsUrl !== '') {
+            $newEntry['TXTRecords'][] = ['Value' => 'ws_url=' . $wsUrl];
+        }
 
         $entries[] = $newEntry;
 
@@ -5407,37 +5515,122 @@ class Remote3IntegrationDriver extends IPSModuleStrict
      * Erkennt den Sensor-Typ einer Variable anhand des Profils und gibt diesen per Debug aus.
      * Nutzt ausschließlich die übergebene Variable-ID und greift nicht auf Mapping oder RowIndex zu.
      *
+     * Zusätzlich:
+     * - Ermittelt die Unit aus dem Variablenprofil (Suffix)
+     * - Übernimmt die Unit automatisch in das Formular
+     * - Unit ist NUR bei Typ "generic" editierbar
+     *
      * @param int $VariableID
      */
     public function AutoDetectSensorType(int $VariableID): void
     {
         $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, "🔍 Auto-Erkennung Sensor-Typ für VarID $VariableID", 0);
 
-        if (!IPS_VariableExists($VariableID)) {
+        if (!@IPS_VariableExists($VariableID)) {
             $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY, "❌ Variable $VariableID existiert nicht", 0);
             return;
         }
 
-        $v = IPS_GetVariable($VariableID);
-        $profile = $v['VariableCustomProfile'] ?: $v['VariableProfile'];
-        $profile = strtolower($profile);
-
-        $type = 'generic';
-
-        if (strpos($profile, 'temp') !== false || strpos($profile, '°c') !== false) {
-            $type = 'temperature';
-        } elseif (strpos($profile, 'humid') !== false) {
-            $type = 'humidity';
-        } elseif (strpos($profile, 'lux') !== false || strpos($profile, 'illum') !== false) {
-            $type = 'illuminance';
-        } elseif (strpos($profile, 'volt') !== false) {
-            $type = 'voltage';
+        $v = @IPS_GetVariable($VariableID);
+        $profile = '';
+        if (is_array($v)) {
+            $profile = (string)($v['VariableCustomProfile'] ?? '');
+            if (trim($profile) === '') {
+                $profile = (string)($v['VariableProfile'] ?? '');
+            }
         }
 
-        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, "✅ Ermittelter Typ für Profil '$profile': $type", 0);
-        $this->UpdateFormField("sensor_type", "value", $type);
-        $this->UpdateFormField("sensor_type", "visible", true);
+        $profileLower = strtolower(trim($profile));
 
+        // Unit aus Variablenprofil (Suffix)
+        $unit = '';
+        if ($profileLower !== '' && @IPS_VariableProfileExists($profile)) {
+            try {
+                $p = IPS_GetVariableProfile($profile);
+                $unit = trim((string)($p['Suffix'] ?? ''));
+            } catch (Throwable $e) {
+                $unit = '';
+            }
+        }
+
+        // Sensor type detection (profile name + unit)
+        // NOTE: Some Symcon profiles like ~Intensity.* also use '%' as suffix.
+        // Those must NOT be mapped to 'humidity'. If Remote 3 has no matching type, we use 'generic'.
+        $type = 'generic';
+
+        $isIntensityLike = (
+            strpos($profileLower, 'intensity') !== false ||
+            strpos($profileLower, 'brightness') !== false ||
+            strpos($profileLower, 'dimmer') !== false ||
+            strpos($profileLower, '~intensity') !== false ||
+            strpos($profileLower, '~brightness') !== false
+        );
+
+        // temperature
+        if (
+            strpos($profileLower, 'temp') !== false ||
+            strpos($profileLower, 'temperature') !== false ||
+            strpos($profileLower, 'celsius') !== false ||
+            strpos($profileLower, '°c') !== false ||
+            stripos($unit, '°c') !== false
+        ) {
+            $type = 'temperature';
+        } // illuminance
+        elseif (
+            strpos($profileLower, 'lux') !== false ||
+            strpos($profileLower, 'illum') !== false ||
+            stripos($unit, 'lx') !== false ||
+            stripos($unit, 'lux') !== false
+        ) {
+            $type = 'illuminance';
+        } // voltage
+        elseif (
+            strpos($profileLower, 'volt') !== false ||
+            strpos($profileLower, '~volt') !== false ||
+            preg_match('/\bv\b/i', $unit) === 1
+        ) {
+            $type = 'voltage';
+        } // humidity (ONLY if not intensity/brightness)
+        elseif (
+            !$isIntensityLike && (
+                strpos($profileLower, 'humid') !== false ||
+                strpos($profileLower, 'humidity') !== false ||
+                strpos($profileLower, '~humidity') !== false ||
+                trim($unit) === '%'
+            )
+        ) {
+            $type = 'humidity';
+        } // intensity/brightness is not a Remote 3 sensor type -> generic
+        elseif ($isIntensityLike) {
+            $type = 'generic';
+        }
+
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY, "✅ Ermittelter Typ für Profil '$profileLower' (unit='$unit'): $type", 0);
+
+        // --- UI behaviour in row editor (sensor_mapping) ---
+        $hasProfile = ($profile !== '' && @IPS_VariableProfileExists($profile));
+
+        // If there is NO profile, we enforce generic (no other selection allowed)
+        if (!$hasProfile) {
+            $type = 'generic';
+            $unit = '';
+        }
+        $type = $this->NormalizeRemoteSensorType($type);
+
+        // Always write the resulting values into the editor fields
+        $this->UpdateFormField('sensor_type', 'value', $type);
+        $this->UpdateFormField('unit', 'value', $unit);
+
+        // Never allow manual selection of sensor_type in the form.
+        // Selection is driven by Symcon profile, or forced to generic when no profile exists.
+        $this->UpdateFormField('sensor_type', 'visible', false);
+        $this->UpdateFormField('sensor_type', 'enabled', false);
+
+        // Unit: editable ONLY when we are in the "no profile" case (forced generic).
+        // If a profile exists, unit is derived from Symcon suffix and must not be edited.
+        $unitEditable = (!$hasProfile);
+        $this->UpdateFormField('unit', 'visible', true);
+        $this->UpdateFormField('unit', 'enabled', $unitEditable);
     }
 
     /**
@@ -6406,6 +6599,59 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         );
     }
 
+    public function StorePopupSensorSelection(string $register, string $instanceId, string $varId): void
+    {
+        $reg = in_array(strtolower(trim($register)), ['1', 'true', 'yes', 'on'], true);
+        $iid = (int)trim($instanceId);
+        $vid = (int)trim($varId);
+
+        if ($vid <= 0) {
+            $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                "⚠️ StorePopupSensorSelection: invalid varId='$varId'", 0);
+            return;
+        }
+
+        // Read current attribute content (JSON array)
+        $listName = 'popup_sensor_suggestions';
+        $raw = trim((string)$this->ReadAttributeString($listName));
+        $rows = [];
+        if ($raw !== '') {
+            $decoded = json_decode($raw, true);
+            if (is_array($decoded)) {
+                $rows = $decoded;
+            }
+        }
+
+        // Update/insert row by var_id
+        $updated = false;
+        foreach ($rows as &$row) {
+            if (!is_array($row)) continue;
+            if ((int)($row['var_id'] ?? 0) === $vid) {
+                $row['register'] = $reg;
+                $row['var_id'] = $vid;
+                $row['instance_id'] = $iid; // keep it even if 0, but normally >0
+                $updated = true;
+                break;
+            }
+        }
+        unset($row);
+
+        if (!$updated) {
+            $rows[] = [
+                'register' => $reg,
+                'var_id' => $vid,
+                'instance_id' => $iid
+            ];
+        }
+
+        $this->WriteAttributeString($listName, json_encode($rows, JSON_UNESCAPED_SLASHES));
+
+        $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+            "💾 Stored sensor selection (var_id=$vid instance_id=$iid register=" . ($reg ? 'true' : 'false') . ")",
+            0
+        );
+    }
+
     /**
      * Applies cached register-state from an attribute to freshly built popup rows.
      *
@@ -6631,6 +6877,95 @@ class Remote3IntegrationDriver extends IPSModuleStrict
             $this->UpdateFormField('light_mapping', 'values', json_encode($existingLights, JSON_UNESCAPED_SLASHES));
 
             // -------------------------
+            // Step 2b: Climate
+            // -------------------------
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                '➕ Applying suggested devices (step 2b: climate)', 0);
+
+            $climateSelected = $this->ReadSelectedFromPopupCache('popup_climate_suggestions', 'instance_id');
+            $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                '✅ Selected climate rows: ' . count($climateSelected), 0);
+
+            if ($climateSelected) {
+                // existing Climate mapping
+                $existingClimate = json_decode((string)$this->ReadPropertyString('climate_mapping'), true);
+                if (!is_array($existingClimate)) {
+                    $existingClimate = [];
+                }
+
+                $existingClimateInstanceIds = [];
+                foreach ($existingClimate as $e) {
+                    if (is_array($e) && isset($e['instance_id'])) {
+                        $existingClimateInstanceIds[(int)$e['instance_id']] = true;
+                    }
+                }
+
+                $addedClimate = 0;
+
+                foreach ($climateSelected as $s) {
+                    $iid = (int)($s['instance_id'] ?? 0);
+                    if ($iid <= 0 || !@IPS_InstanceExists($iid)) {
+                        continue;
+                    }
+                    if (isset($existingClimateInstanceIds[$iid])) {
+                        continue;
+                    }
+
+                    // Resolve variables via DeviceRegistry mapping.
+                    // Fallback keys cover common thermostat implementations.
+                    $statusVar = (int)($this->ResolveFeatureVarID($iid, 'status') ?? 0);
+                    if ($statusVar <= 0) {
+                        $statusVar = (int)($this->ResolveFeatureVarID($iid, 'state') ?? 0);
+                    }
+
+                    $currentTempVar = (int)($this->ResolveFeatureVarID($iid, 'current_temperature') ?? 0);
+                    if ($currentTempVar <= 0) {
+                        $currentTempVar = (int)($this->ResolveFeatureVarID($iid, 'temperature') ?? 0);
+                    }
+
+                    $targetTempVar = (int)($this->ResolveFeatureVarID($iid, 'target_temperature') ?? 0);
+                    if ($targetTempVar <= 0) {
+                        $targetTempVar = (int)($this->ResolveFeatureVarID($iid, 'setpoint') ?? 0);
+                    }
+
+                    $modeVar = (int)($this->ResolveFeatureVarID($iid, 'mode') ?? 0);
+                    if ($modeVar <= 0) {
+                        $modeVar = (int)($this->ResolveFeatureVarID($iid, 'operation_mode') ?? 0);
+                    }
+
+                    // Validate variables (0 is allowed for optional fields, but at least one should exist)
+                    foreach (['statusVar' => $statusVar, 'currentTempVar' => $currentTempVar, 'targetTempVar' => $targetTempVar, 'modeVar' => $modeVar] as $k => $vid) {
+                        if ($vid > 0 && !@IPS_VariableExists($vid)) {
+                            $$k = 0;
+                        }
+                    }
+
+                    if ($statusVar <= 0 && $currentTempVar <= 0 && $targetTempVar <= 0 && $modeVar <= 0) {
+                        $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                            "⚠️ Skipping climate instance $iid: no climate variables resolved via DeviceRegistry", 0);
+                        continue;
+                    }
+
+                    $existingClimate[] = [
+                        'name' => (string)@IPS_GetName($iid),
+                        'instance_id' => $iid,
+                        'status_var_id' => $statusVar,
+                        'current_temp_var_id' => $currentTempVar,
+                        'target_temp_var_id' => $targetTempVar,
+                        'mode_var_id' => $modeVar
+                    ];
+
+                    $existingClimateInstanceIds[$iid] = true;
+                    $addedClimate++;
+                }
+
+                $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
+                    '➕ Climate devices added to mapping: ' . $addedClimate, 0);
+
+                $this->UpdateFormField('climate_mapping', 'values', json_encode($existingClimate, JSON_UNESCAPED_SLASHES));
+            }
+
+            // -------------------------
             // Step 3: Covers
             // -------------------------
             $this->Debug(__FUNCTION__, self::LV_INFO, self::TOPIC_DISCOVERY,
@@ -6838,27 +7173,52 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 foreach ($sensorSelected as $s) {
                     $iid = (int)($s['instance_id'] ?? 0);
                     $varId = (int)($s['var_id'] ?? 0);
-                    if ($iid <= 0 || !IPS_InstanceExists($iid) || $varId <= 0 || !IPS_VariableExists($varId)) {
+
+                    if ($varId <= 0 || !@IPS_VariableExists($varId)) {
+                        $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                            '⚠️ Skipping sensor row: invalid/missing var_id', 0);
                         continue;
                     }
 
-                    $unit = trim((string)($s['unit'] ?? ''));
-                    if ($unit === '') {
-                        $unit = $this->GuessUnitForVariable($varId);
+                    // Popup cache may only store {register,var_id}. Derive instance_id from variable parent if missing.
+                    if ($iid <= 0) {
+                        $iid = (int)@IPS_GetParent($varId);
                     }
 
-                    $sensorType = trim((string)($s['sensor_type'] ?? 'custom'));
-                    if ($sensorType === '') {
-                        $sensorType = 'custom';
+                    if ($iid <= 0 || !@IPS_InstanceExists($iid)) {
+                        $this->Debug(__FUNCTION__, self::LV_WARN, self::TOPIC_DISCOVERY,
+                            "⚠️ Skipping sensor varId=$varId: could not resolve valid instance_id (parent=$iid)", 0);
+                        continue;
                     }
+
+                    // Unit comes from Symcon variable profile suffix/prefix (if any)
+                    $unit = $this->GuessUnitForVariable($varId);
+
+                    // Derive a Remote 3 compatible sensor type; unknown => generic
+                    $sensorType = $this->DeriveRemoteSensorTypeForVariable($varId, $unit);
+
+                    $this->Debug(__FUNCTION__, self::LV_TRACE, self::TOPIC_DISCOVERY,
+                        "🧪 Sensor candidate: iid=$iid varId=$varId type=$sensorType unit=$unit", 0);
 
                     $key = $iid . ':' . (int)$varId;
                     if (isset($existingKeys[$key])) {
                         continue;
                     }
 
+                    // Insert helper for short sensor name
+                    $instName = trim((string)@IPS_GetName($iid));
+                    $varName = trim((string)@IPS_GetName($varId));
+                    $shortName = $instName;
+                    if ($shortName !== '' && $varName !== '') {
+                        $shortName .= ' – ' . $varName;
+                    } elseif ($varName !== '') {
+                        $shortName = $varName;
+                    } elseif ($shortName === '') {
+                        $shortName = 'Sensor';
+                    }
+
                     $existingSensors[] = [
-                        'name' => IPS_GetName($iid),
+                        'name' => $shortName,
                         'instance_id' => $iid,
                         'var_id' => (int)$varId,
                         'unit' => (string)$unit,
@@ -6965,6 +7325,68 @@ class Remote3IntegrationDriver extends IPSModuleStrict
         $prefix = trim((string)($p['Prefix'] ?? ''));
 
         return $suffix !== '' ? $suffix : ($prefix !== '' ? $prefix : '');
+    }
+
+    private function NormalizeRemoteSensorType(string $type): string
+    {
+        $type = strtolower(trim($type));
+        $allowed = ['temperature', 'humidity', 'illuminance', 'voltage', 'generic'];
+        return in_array($type, $allowed, true) ? $type : 'generic';
+    }
+
+    private function DeriveRemoteSensorTypeForVariable(int $varId, string $unit = ''): string
+    {
+        $unit = trim($unit);
+
+        // Prefer profile name heuristics (robust across different suffixes)
+        $profile = '';
+        $v = @IPS_GetVariable($varId);
+        if (is_array($v)) {
+            $profile = trim((string)($v['VariableCustomProfile'] ?? ''));
+            if ($profile === '') {
+                $profile = trim((string)($v['VariableProfile'] ?? ''));
+            }
+        }
+        $p = strtolower($profile);
+
+        $type = 'generic';
+
+        if ($p !== '') {
+            if (strpos($p, 'temperature') !== false || strpos($p, 'temp') !== false || strpos($p, 'celsius') !== false) {
+                $type = 'temperature';
+            } elseif (strpos($p, 'humidity') !== false || strpos($p, 'feuchtigkeit') !== false) {
+                $type = 'humidity';
+            } elseif (
+                strpos($p, 'illumin') !== false ||
+                strpos($p, 'lux') !== false ||
+                strpos($p, 'beleucht') !== false ||
+                strpos($p, 'intensity') !== false ||
+                strpos($p, 'brightness') !== false ||
+                strpos($p, 'helligkeit') !== false ||
+                strpos($p, 'dimmer') !== false ||
+                strpos($p, 'level') !== false
+            ) {
+                $type = 'illuminance';
+            } elseif (strpos($p, 'voltage') !== false || strpos($p, 'volt') !== false) {
+                $type = 'voltage';
+            }
+        }
+
+        // If still generic, try unit heuristics (strict)
+        if ($type === 'generic' && $unit !== '') {
+            $u = strtolower($unit);
+            if ($u === '°c' || $u === 'c' || strpos($u, 'celsius') !== false) {
+                $type = 'temperature';
+            } elseif (strpos($u, 'rh') !== false || strpos($u, '%rh') !== false) {
+                $type = 'humidity';
+            } elseif ($u === 'lx' || strpos($u, 'lux') !== false) {
+                $type = 'illuminance';
+            } elseif ($u === 'v' || strpos($u, 'volt') !== false) {
+                $type = 'voltage';
+            }
+        }
+
+        return $this->NormalizeRemoteSensorType($type);
     }
 
     /**
@@ -7245,15 +7667,16 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                             'name' => 'popup_sensor_suggestions',
                             'caption' => '📈 Sensor',
                             'columns' => [
-                                ['caption' => 'Register', 'name' => 'register', 'width' => '140px', 'add' => false, 'edit' => ['type' => 'CheckBox']],
-                                ['caption' => '📦 Object', 'name' => 'label', 'width' => '200px'],
-                                ['caption' => 'Name', 'name' => 'name', 'width' => 'auto', 'add' => '', 'edit' => ['type' => 'ValidationTextBox']],
+                                ['caption' => 'Register', 'name' => 'register', 'width' => '140px', 'add' => false, 'edit' => ['type' => 'CheckBox'], 'save' => true],
+                                ['caption' => '📦 Object', 'name' => 'label', 'width' => '200px', 'save' => true],
+                                ['caption' => 'Name', 'name' => 'name', 'width' => 'auto', 'add' => '', 'edit' => ['type' => 'ValidationTextBox'], 'save' => true],
                                 ['caption' => 'Instance ID', 'name' => 'instance_id', 'width' => '10px', 'visible' => false, 'save' => true],
+                                ['caption' => 'Var ID', 'name' => 'var_id', 'width' => '10px', 'visible' => false, 'save' => true],
                             ],
                             'add' => false,
                             'delete' => false,
                             'rowCount' => 8,
-                            'onEdit' => 'UCR_StorePopupList($id, "popup_sensor_suggestions", (string)$popup_sensor_suggestions["register"], "instance_id", (string)$popup_sensor_suggestions["instance_id"]);'
+                            'onEdit' => 'UCR_StorePopupSensorSelection($id, (string)$popup_sensor_suggestions["register"], (string)$popup_sensor_suggestions["instance_id"], (string)$popup_sensor_suggestions["var_id"]);'
                         ],
                         [
                             'type' => 'List',
