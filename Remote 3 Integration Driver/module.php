@@ -3188,7 +3188,7 @@ class Remote3IntegrationDriver extends IPSModuleStrict
                 // Help the Remote select IPv4 by overriding the full websocket url.
                 // If we couldn't determine a stable IPv4, we omit ws_url and fall back to host/port discovery.
                 // ws_path is included for completeness.
-                ['Value' => 'ws_path=' . $wsPath],
+                //['Value' => 'ws_path=' . $wsPath],
             ]
         ];
 
