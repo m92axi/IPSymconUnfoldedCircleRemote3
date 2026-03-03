@@ -20,6 +20,7 @@ require_once __DIR__ . '/../libs/DeviceRegistry.php';
 include_once __DIR__ . '/../libs/ClientSessionManagement.php';
 
 use WebsocketHandler\WebSocketUtils;
+//Test
 
 class Remote3IntegrationDriver extends IPSModuleStrict
 {
